@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 from .schemas import ExportMeetingResponse, LanguageCode, Note, SummarySnapshot, TranscriptSegment
 from .storage.db import Storage
+from .reports.standalone import write_standalone_report
 
 
 def _format_seconds(seconds: float) -> str:
@@ -272,6 +273,7 @@ def export_meeting(
     segments = storage.list_segments(meeting_id)
     snapshots = storage.list_snapshots(meeting_id)
     notes = storage.list_notes(meeting_id)
+    reports = storage.list_report_revisions(meeting_id)
 
     if export_dir is None:
         export_root.mkdir(parents=True, exist_ok=True)
@@ -296,6 +298,11 @@ def export_meeting(
     )
     _write_summary(summary_path, meeting=meeting, snapshots=snapshots, notes=notes)
     files = ["transcript.md", "summary.md", "metadata.json"]
+    if reports:
+        latest_by_id = {report.report_id: report for report in reports}
+        latest_report = max(latest_by_id.values(), key=lambda report: report.created_at)
+        write_standalone_report(export_dir / "meeting-report.html", latest_report, segments)
+        files.append("meeting-report.html")
     if _write_clean_conversation(clean_conversation_path, meeting=meeting, snapshots=snapshots):
         files.insert(1, "clean_conversation.md")
 

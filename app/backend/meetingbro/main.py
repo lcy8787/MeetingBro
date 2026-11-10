@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import sqlite3
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -21,7 +22,8 @@ from .audio import AudioSource, MicrophoneSource, MixedAudioSource, SystemAudioL
 from .audio.devices import enumerate_audio_devices
 from .exporter import export_meeting
 from .hardware import HardwareProfile, detect_hardware_profile
-from .llm.openai_compatible import OpenAICompatibleClient, OpenAICompatibleConfig, _load_dotenv_if_present
+from .llm.openai_compatible import OpenAICompatibleClient, OpenAICompatibleConfig, _load_dotenv_if_present, is_local_ollama_url
+from .reports.generator import generate_report
 from .schemas import (
     CreateNoteRequest,
     ErrorPayload,
@@ -30,6 +32,7 @@ from .schemas import (
     LanguageCode,
     MeetingListItem,
     Note,
+    ReportRevision,
     SessionStatePayload,
     SummarySnapshot,
     TranscriptSegment,
@@ -541,6 +544,7 @@ async def lifespan(app: FastAPI):
     ):
         preview_asr = _build_preview_asr(hardware, formal_asr=asr)
     app.state.storage = storage
+    app.state.report_locks = {}
     app.state.hardware_profile = hardware
     app.state.asr = asr
     app.state.formal_asr_device = whisper_device
@@ -814,6 +818,46 @@ async def list_summaries(
 ) -> list[SummarySnapshot]:
     storage: Storage = app.state.storage
     return storage.list_snapshots(meeting_id, summary_type=summary_type)  # type: ignore[arg-type]
+
+
+@app.get("/meetings/{meeting_id}/reports", response_model=list[ReportRevision])
+async def list_reports(meeting_id: str) -> list[ReportRevision]:
+    storage: Storage = app.state.storage
+    if storage.get_meeting(meeting_id) is None:
+        raise HTTPException(status_code=404, detail="meeting not found")
+    return storage.list_report_revisions(meeting_id)
+
+
+@app.post("/meetings/{meeting_id}/reports/generate", response_model=ReportRevision)
+async def generate_meeting_report(meeting_id: str) -> ReportRevision:
+    """Generate a new revision off the event loop; recording remains independent."""
+    storage: Storage = app.state.storage
+    lock = app.state.report_locks.setdefault(meeting_id, asyncio.Lock())
+    async with lock:
+        meeting = await asyncio.to_thread(storage.get_meeting, meeting_id)
+        if meeting is None:
+            raise HTTPException(status_code=404, detail="meeting not found")
+        segments = await asyncio.to_thread(storage.list_segments, meeting_id)
+        if not any(s.text.strip() for s in segments):
+            raise HTTPException(status_code=422, detail="meeting has no transcript")
+        language = meeting.get("preferred_summary_language")
+        if language not in ("zh", "en", "de"):
+            language = "en"
+        # Report generation is local-only even when an external summary provider
+        # happens to be configured. Never send transcript text to that provider.
+        base_url = os.environ.get("MEETINGBRO_LLM_BASE_URL", "")
+        local_client = OpenAICompatibleClient.from_env() if is_local_ollama_url(base_url) else None
+        document = await asyncio.to_thread(generate_report, segments, language=language, client=local_client)
+        report_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"meetingbro:report:{meeting_id}"))
+        existing = await asyncio.to_thread(storage.list_report_revisions, meeting_id)
+        revision = max((r.revision for r in existing if r.report_id == report_id), default=0) + 1
+        report = ReportRevision(report_id=report_id, meeting_id=meeting_id, report_type="meeting",
+                                revision=revision, document=document, created_at=datetime.now(timezone.utc))
+        try:
+            await asyncio.to_thread(storage.insert_report_revision, report)
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            raise HTTPException(status_code=409, detail="Meeting or report changed during generation") from exc
+        return report
 
 
 @app.post("/meetings/{meeting_id}/export", response_model=ExportMeetingResponse)

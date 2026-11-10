@@ -7,6 +7,7 @@ import { useBackendStatus } from "./system/useBackendStatus";
 import { BackendGate } from "./components/BackendGate";
 import { SettingsModal } from "./components/SettingsModal";
 import { HistoryModal } from "./components/HistoryModal";
+import { ReportView } from "./components/ReportView";
 import { fetchAudioDevices } from "./system/backendApi";
 import type { AudioDevices } from "./system/backendApi";
 
@@ -412,13 +413,13 @@ export default function App() {
   );
   const [computeActivityHold, setComputeActivityHold] = useState({ cpu: false, gpu: false });
   const [vocabularyOpen, setVocabularyOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<"summary" | "clean" | "board" | "notes">("summary");
+  const [activeTab, setActiveTab] = useState<"summary" | "clean" | "board" | "notes" | "report">("summary");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [audioDevice, setAudioDevice] = useState("");
   const [loopbackDevice, setLoopbackDevice] = useState("");
   const [audioDevices, setAudioDevices] = useState<AudioDevices | null>(null);
-  const { connected, state, meetingId, sessionStartedAt, elapsedSeconds, sessionStats, segments, previewSegment, previewSegments, isExperimentalPreview, previewDisplayText, previewIsStreaming, departingPreviewSegments, latestByType, historyByType, notes, lastError, lastErrorCode, saveNote, saveBookmark, applyVocabulary, exportMeeting, requestSummary, pauseSession, resumeSession, stopSession } =
+  const { connected, state, meetingId, sessionStartedAt, elapsedSeconds, sessionStats, segments, previewSegment, previewSegments, isExperimentalPreview, previewDisplayText, previewIsStreaming, departingPreviewSegments, latestByType, historyByType, liveReport, notes, lastError, lastErrorCode, saveNote, saveBookmark, applyVocabulary, exportMeeting, requestSummary, pauseSession, resumeSession, stopSession } =
     useSessionSocket({ enabled: sessionEnabled, source, speechLanguage, summaryLanguage, subtitleLanguage, runtimeProfile, audioDevice, loopbackDevice });
 
   const backend = useBackendStatus();
@@ -1573,6 +1574,7 @@ export default function App() {
             >
               Board
             </button>
+            <button type="button" role="tab" aria-selected={activeTab === "report"} className={`workspace-tab-btn${activeTab === "report" ? " active" : ""}`} onClick={() => setActiveTab("report")}>Interactive report</button>
             <button
               type="button"
               role="tab"
@@ -1629,6 +1631,9 @@ export default function App() {
                 refreshBusy={refreshingSummary === "cumulative_meeting_summary"}
               />
             )}
+            {activeTab === "report" && <div className="workspace-tab-panel panel-body">
+              {liveReport ? <ReportView report={liveReport} transcript={segments} /> : <p>The report will appear when a summary is ready.</p>}
+            </div>}
             {activeTab === "notes" && (
               <div className="workspace-tab-panel">
                 <div ref={notesBodyRef} className="panel-body">

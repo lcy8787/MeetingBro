@@ -1,14 +1,17 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   deleteMeeting,
   exportMeetingById,
   fetchMeetings,
   fetchMeetingNotes,
+  fetchMeetingReports,
+  generateMeetingReport,
   fetchMeetingSummaries,
   fetchMeetingTranscript,
   type MeetingListItem,
 } from "../system/backendApi";
-import type { Note, SummarySnapshot, TranscriptSegment } from "../types";
+import type { Note, ReportRevision, SummarySnapshot, TranscriptSegment } from "../types";
+import { ReportView } from "./ReportView";
 
 interface HistoryModalProps {
   open: boolean;
@@ -20,6 +23,7 @@ interface MeetingDetail {
   transcript: TranscriptSegment[];
   summaries: SummarySnapshot[];
   notes: Note[];
+  reports: ReportRevision[];
 }
 
 // Most-useful cumulative summary to show as the meeting overview, best first.
@@ -68,6 +72,7 @@ export function HistoryModal({ open, onClose, currentMeetingId }: HistoryModalPr
   const [detailLoading, setDetailLoading] = useState(false);
   const [actionNote, setActionNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const selectedIdRef = useRef<string | null>(null);
 
   const loadList = useCallback(() => {
     setListError(null);
@@ -82,6 +87,7 @@ export function HistoryModal({ open, onClose, currentMeetingId }: HistoryModalPr
   useEffect(() => {
     if (!open) return;
     setSelectedId(null);
+    selectedIdRef.current = null;
     setDetail(null);
     setActionNote(null);
     loadList();
@@ -89,13 +95,28 @@ export function HistoryModal({ open, onClose, currentMeetingId }: HistoryModalPr
 
   const openDetail = useCallback((id: string) => {
     setSelectedId(id);
+    selectedIdRef.current = id;
     setDetail(null);
     setActionNote(null);
     setDetailLoading(true);
-    Promise.all([fetchMeetingTranscript(id), fetchMeetingSummaries(id), fetchMeetingNotes(id)])
-      .then(([transcript, summaries, notes]) => setDetail({ transcript, summaries, notes }))
-      .catch((err) => setActionNote(`Could not load meeting: ${(err as Error).message}`))
-      .finally(() => setDetailLoading(false));
+    Promise.all([fetchMeetingTranscript(id), fetchMeetingSummaries(id), fetchMeetingNotes(id), fetchMeetingReports(id)])
+      .then(([transcript, summaries, notes, reports]) => { if (selectedIdRef.current === id) setDetail({ transcript, summaries, notes, reports }); })
+      .catch((err) => { if (selectedIdRef.current === id) setActionNote(`Could not load meeting: ${(err as Error).message}`); })
+      .finally(() => { if (selectedIdRef.current === id) setDetailLoading(false); });
+  }, []);
+
+  const onGenerateReport = useCallback(async (id: string) => {
+    setBusy(true);
+    setActionNote("Generating report…");
+    try {
+      const report = await generateMeetingReport(id);
+      if (selectedIdRef.current === id) {
+        setDetail((current) => current ? { ...current, reports: [...current.reports, report] } : current);
+        setActionNote("Report ready");
+      }
+    } catch (err) {
+      if (selectedIdRef.current === id) setActionNote(`Report generation failed: ${(err as Error).message}`);
+    } finally { setBusy(false); }
   }, []);
 
   const onExport = useCallback(async (id: string) => {
@@ -122,6 +143,7 @@ export function HistoryModal({ open, onClose, currentMeetingId }: HistoryModalPr
         await deleteMeeting(id);
         if (selectedId === id) {
           setSelectedId(null);
+          selectedIdRef.current = null;
           setDetail(null);
         }
         loadList();
@@ -182,8 +204,10 @@ export function HistoryModal({ open, onClose, currentMeetingId }: HistoryModalPr
               <>
                 <div className="history__detail-actions">
                   <button type="button" onClick={() => onExport(selectedId)} disabled={busy}>Export</button>
+                  <button type="button" onClick={() => onGenerateReport(selectedId)} disabled={busy || detail.transcript.length === 0}>Generate report</button>
                   <button type="button" className="history__delete" onClick={() => onDelete(selectedId)} disabled={busy}>Delete</button>
                 </div>
+                {detail.reports.length > 0 && <ReportView report={detail.reports[detail.reports.length - 1]} transcript={detail.transcript} />}
                 {overview && (
                   <section className="history__section">
                     <h3>Summary</h3>

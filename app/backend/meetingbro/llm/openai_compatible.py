@@ -4,6 +4,7 @@ import json
 import os
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 from dataclasses import dataclass
 import logging
 import time
@@ -53,6 +54,11 @@ def _load_dotenv_if_present() -> None:
         return
 
 
+def is_local_ollama_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"} and parsed.port == 11434
+
+
 @dataclass(frozen=True)
 class OpenAICompatibleConfig:
     api_key: str
@@ -89,6 +95,9 @@ class OpenAICompatibleClient:
         api_key = os.environ.get("MEETINGBRO_LLM_API_KEY") or os.environ.get(
             "LONGCAT_API_KEY"
         )
+        base_url = os.environ.get("MEETINGBRO_LLM_BASE_URL")
+        if not api_key and base_url and is_local_ollama_url(base_url):
+            api_key = "ollama"  # Ollama ignores this compatibility header.
         if not api_key:
             return None
 

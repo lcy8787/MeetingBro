@@ -40,6 +40,40 @@ export interface SummarySnapshot {
   created_at: string;
 }
 
+export interface ReportBlock {
+  type: "paragraph" | "bullet" | "quote" | "action" | "concept" | "timeline" | "comparison" | "argument" | "statistic" | "conclusion";
+  title: string;
+  text: string;
+  detail: string;
+  source_segment_ids: string[];
+}
+
+export interface ReportSection {
+  id: string;
+  title: string;
+  layout_type: "text" | "concept" | "timeline" | "comparison" | "argument" | "statistic" | "conclusion";
+  blocks: ReportBlock[];
+}
+
+export interface ReportDocument {
+  title: string;
+  executive_summary: string;
+  executive_summary_source_segment_ids: string[];
+  takeaways: ReportBlock[];
+  sections: ReportSection[];
+  generation_method: "extractive" | "llm" | "mixed";
+  warnings: string[];
+}
+
+export interface ReportRevision {
+  report_id: string;
+  meeting_id: string;
+  report_type: string;
+  revision: number;
+  document: ReportDocument;
+  created_at: string;
+}
+
 export interface Note {
   id: string;
   meeting_id: string;
@@ -136,6 +170,7 @@ export type SessionEvent =
   | { type: "transcript_translation"; payload: { segment_id: string; language: LanguageCode; text: string } }
   | { type: "transcript_preview"; payload: { segment: TranscriptSegment | null; preview_backend?: string; preview_is_experimental?: boolean; preview_quality_note?: string | null } }
   | { type: "summary_snapshot"; payload: SummarySnapshot }
+  | { type: "report_revision"; payload: ReportRevision }
   | { type: "note_saved"; payload: Note }
   | { type: "session_state"; payload: SessionStatePayload }
   | { type: "error"; payload: { code: string; message: string } };

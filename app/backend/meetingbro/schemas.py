@@ -53,6 +53,42 @@ class SummarySnapshot(BaseModel):
     created_at: datetime
 
 
+class ReportBlock(BaseModel):
+    """Plain text only; clients must render all fields as text, never HTML."""
+
+    type: Literal["paragraph", "bullet", "quote", "action", "concept", "timeline", "comparison", "argument", "statistic", "conclusion"] = "paragraph"
+    text: str
+    title: str = ""
+    detail: str = ""
+    source_segment_ids: list[str] = Field(default_factory=list)
+
+
+class ReportSection(BaseModel):
+    id: str = ""
+    title: str = ""
+    layout_type: Literal["text", "concept", "timeline", "comparison", "argument", "statistic", "conclusion"] = "text"
+    blocks: list[ReportBlock] = Field(default_factory=list)
+
+
+class ReportDocument(BaseModel):
+    title: str = ""
+    executive_summary: str = ""
+    executive_summary_source_segment_ids: list[str] = Field(default_factory=list)
+    takeaways: list[ReportBlock] = Field(default_factory=list)
+    sections: list[ReportSection] = Field(default_factory=list)
+    generation_method: Literal["extractive", "llm", "mixed"] = "extractive"
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ReportRevision(BaseModel):
+    report_id: str
+    meeting_id: str
+    report_type: str
+    revision: int = Field(ge=1)
+    document: ReportDocument
+    created_at: datetime
+
+
 class Speaker(BaseModel):
     id: str
     meeting_id: str

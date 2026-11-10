@@ -35,6 +35,7 @@ from ..schemas import (
     TranscriptSegment,
 )
 from ..storage.db import Storage
+from ..reports.live import update_live_report
 from ..summarization.base import Summarizer
 from ..translation.base import Translator
 
@@ -3640,7 +3641,18 @@ class SessionManager:
         )
         self._cfg.storage.insert_snapshot(snap)
         await self._emit("summary_snapshot", snap)
+        await self._emit_report_revision(snap)
         return snap
+
+    async def _emit_report_revision(self, snapshot: SummarySnapshot) -> None:
+        try:
+            report = update_live_report(self._cfg.storage, snapshot)
+            if report is not None:
+                await self._emit("report_revision", report)
+        except Exception:
+            # A report error must never interrupt capture or summary persistence.
+            logger.exception("Could not update live report")
+            await self._emit("error", ErrorPayload(code="report_update_failed", message="Could not update the live report."))
 
     async def _maybe_emit_rolling(self) -> None:
         now = self._state.elapsed_seconds
@@ -3888,3 +3900,4 @@ class SessionManager:
             )
             self._cfg.storage.insert_snapshot(snap)
             await self._emit("summary_snapshot", snap)
+            await self._emit_report_revision(snap)

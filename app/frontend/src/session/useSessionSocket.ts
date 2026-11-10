@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   Note,
+  ReportRevision,
   ExportMeetingResponse,
   SessionEvent,
   SessionStatePayload,
@@ -9,6 +10,7 @@ import type {
   SummaryType,
   TranscriptSegment,
 } from "../types";
+import { fetchMeetingReports } from "../system/backendApi";
 
 const DEFAULT_WS = "ws://127.0.0.1:8765/ws/session";
 const VOCABULARY_STORAGE_KEY = "meetingbro.vocabulary";
@@ -102,6 +104,7 @@ export interface SessionView {
   departingPreviewSegments: TranscriptSegment[];
   latestByType: Partial<Record<SummaryType, SummarySnapshot>>;
   historyByType: Partial<Record<SummaryType, SummarySnapshot[]>>;
+  liveReport: ReportRevision | null;
   notes: Note[];
   lastError: string | null;
   lastErrorCode: string | null;
@@ -128,6 +131,7 @@ export function useSessionSocket(options: SessionOptions = {}): SessionView {
   const [isExperimentalPreview, setIsExperimentalPreview] = useState(false);
   const [latestByType, setLatestByType] = useState<SessionView["latestByType"]>({});
   const [historyByType, setHistoryByType] = useState<SessionView["historyByType"]>({});
+  const [liveReport, setLiveReport] = useState<ReportRevision | null>(null);
   const [notes, setNotes] = useState<Note[]>([]);
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastErrorCode, setLastErrorCode] = useState<string | null>(null);
@@ -451,6 +455,7 @@ export function useSessionSocket(options: SessionOptions = {}): SessionView {
     setIsExperimentalPreview(false);
     setLatestByType({});
     setHistoryByType({});
+    setLiveReport(null);
     setNotes([]);
     setMeetingId(null);
     setSessionStartedAt(null);
@@ -550,6 +555,9 @@ export function useSessionSocket(options: SessionOptions = {}): SessionView {
                 [msg.payload.summary_type]: [...existing, msg.payload],
               };
             });
+            break;
+          case "report_revision":
+            setLiveReport((previous) => !previous || previous.report_id !== msg.payload.report_id || msg.payload.revision > previous.revision ? msg.payload : previous);
             break;
           case "note_saved":
             setNotes((prev) => [...prev, msg.payload]);
@@ -700,6 +708,21 @@ export function useSessionSocket(options: SessionOptions = {}): SessionView {
     [meetingId],
   );
 
+  useEffect(() => {
+    if (!meetingId || !connected) return;
+    let cancelled = false;
+    const sync = () => {
+      fetchMeetingReports(meetingId).then((reports) => {
+        if (cancelled) return;
+        const latest = reports.filter((r) => r.report_type === "live").at(-1);
+        if (latest) setLiveReport((previous) => !previous || previous.report_id !== latest.report_id || latest.revision > previous.revision ? latest : previous);
+      }).catch(() => { /* WebSocket updates continue if the refresh fails. */ });
+    };
+    sync();
+    const timer = window.setInterval(sync, 15000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [meetingId, connected]);
+
   return {
     connected,
     state,
@@ -716,6 +739,7 @@ export function useSessionSocket(options: SessionOptions = {}): SessionView {
     departingPreviewSegments,
     latestByType,
     historyByType,
+    liveReport,
     notes,
     lastError,
     lastErrorCode,

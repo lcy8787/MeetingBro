@@ -1,6 +1,6 @@
 // Thin fetch wrappers over the backend's read-only/validation endpoints.
 
-import type { ExportMeetingResponse, Note, SummarySnapshot, TranscriptSegment } from "../types";
+import type { ExportMeetingResponse, Note, ReportRevision, SummarySnapshot, TranscriptSegment } from "../types";
 
 function httpBase(): string {
   return window.meetingbro?.backendHttp ?? "http://127.0.0.1:8765";
@@ -81,6 +81,18 @@ export async function fetchMeetingTranscript(id: string): Promise<TranscriptSegm
 export async function fetchMeetingSummaries(id: string): Promise<SummarySnapshot[]> {
   const res = await fetch(`${httpBase()}/meetings/${id}/summaries`);
   if (!res.ok) throw new Error(`summaries ${res.status}`);
+  return res.json();
+}
+
+export async function fetchMeetingReports(id: string): Promise<ReportRevision[]> {
+  const res = await fetch(`${httpBase()}/meetings/${encodeURIComponent(id)}/reports`);
+  if (!res.ok) throw new Error(`reports ${res.status}`);
+  return res.json();
+}
+
+export async function generateMeetingReport(id: string): Promise<ReportRevision> {
+  const res = await fetch(`${httpBase()}/meetings/${encodeURIComponent(id)}/reports/generate`, { method: "POST" });
+  if (!res.ok) throw new Error(`report generation ${res.status}`);
   return res.json();
 }
 

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
-from ..schemas import Note, Speaker, SummarySnapshot, SummaryType, TranscriptSegment
+from ..schemas import Note, ReportDocument, ReportRevision, Speaker, SummarySnapshot, SummaryType, TranscriptSegment
 
 
 SCHEMA = """
@@ -104,6 +104,68 @@ class Storage:
             except sqlite3.OperationalError:
                 pass
             self._conn.commit()
+            self._migrate_reports()
+
+    def _migrate_reports(self) -> None:
+        # Keep our own migration ledger so existing databases' user_version is untouched.
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            self._conn.execute("CREATE TABLE IF NOT EXISTS meetingbro_migrations (version INTEGER PRIMARY KEY)")
+            if not self._conn.execute("SELECT 1 FROM meetingbro_migrations WHERE version = 1").fetchone():
+                self._conn.execute("""CREATE TABLE report_revisions (
+                    report_id TEXT NOT NULL, meeting_id TEXT NOT NULL,
+                    report_type TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision > 0),
+                    document TEXT NOT NULL, created_at TEXT NOT NULL,
+                    PRIMARY KEY (report_id, revision),
+                    FOREIGN KEY (meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+                )""")
+                self._conn.execute("CREATE INDEX idx_reports_meeting ON report_revisions(meeting_id, report_type, revision)")
+                self._conn.execute("INSERT INTO meetingbro_migrations(version) VALUES (1)")
+            self._conn.commit()
+        except Exception:
+            self._conn.rollback()
+            raise
+
+    def insert_report_revision(self, report: ReportRevision) -> None:
+        """Append a revision after checking that every cited segment belongs to the meeting."""
+        blocks = [*report.document.takeaways, *(b for s in report.document.sections for b in s.blocks)]
+        citations = {source for block in blocks for source in block.source_segment_ids}
+        citations.update(report.document.executive_summary_source_segment_ids)
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                valid = {row[0] for row in self._conn.execute(
+                    "SELECT id FROM transcript_segments WHERE meeting_id = ?", (report.meeting_id,)
+                )}
+                if not citations <= valid:
+                    raise ValueError("Report references segments outside this meeting or missing segments")
+                previous = self._conn.execute(
+                    "SELECT meeting_id, report_type, MAX(revision) FROM report_revisions WHERE report_id = ?",
+                    (report.report_id,),
+                ).fetchone()
+                if previous[2] is not None and (previous[0] != report.meeting_id or previous[1] != report.report_type):
+                    raise ValueError("Report identity cannot change between revisions")
+                if report.revision != (previous[2] or 0) + 1:
+                    raise ValueError("Report revisions must be consecutive")
+                self._conn.execute(
+                    "INSERT INTO report_revisions VALUES (?, ?, ?, ?, ?, ?)",
+                    (report.report_id, report.meeting_id, report.report_type, report.revision,
+                     report.document.model_dump_json(), _iso(report.created_at)),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def list_report_revisions(self, meeting_id: str) -> list[ReportRevision]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT report_id, meeting_id, report_type, revision, document, created_at "
+                "FROM report_revisions WHERE meeting_id = ? ORDER BY report_id, revision", (meeting_id,)
+            ).fetchall()
+        return [ReportRevision(report_id=r[0], meeting_id=r[1], report_type=r[2], revision=r[3],
+                               document=ReportDocument.model_validate_json(r[4]),
+                               created_at=datetime.fromisoformat(r[5])) for r in rows]
 
     def close(self) -> None:
         with self._lock:
@@ -112,7 +174,9 @@ class Storage:
     def create_meeting(self, meeting_id: str, preferred_summary_language: str = "en") -> None:
         with self._lock:
             self._conn.execute(
-                "INSERT OR REPLACE INTO meetings (id, started_at, preferred_summary_language) VALUES (?, ?, ?)",
+                "INSERT INTO meetings (id, started_at, preferred_summary_language) VALUES (?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET started_at=excluded.started_at, ended_at=NULL, "
+                "preferred_summary_language=excluded.preferred_summary_language",
                 (meeting_id, _iso(_utc_now()), preferred_summary_language),
             )
             self._conn.commit()
