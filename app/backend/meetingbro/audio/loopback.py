@@ -49,7 +49,7 @@ class SystemAudioLoopbackSource(AudioSource):
     ----------
     sample_rate
         Target sample rate for emitted chunks (Hz). Resampled from the device's
-        native rate. Defaults to 16 kHz to match Whisper.
+        native rate. Defaults to 16 kHz to match Qwen3.
     chunk_seconds
         Duration of each emitted ``AudioChunk`` in seconds.
     speaker_name

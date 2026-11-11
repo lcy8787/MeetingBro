@@ -37,6 +37,7 @@ export interface SummarySnapshot {
   time_end: number;
   language: LanguageCode;
   content: string;
+  generation_method?: "unknown" | "extractive" | "llm";
   source_segment_ids: string[];
   is_latest: boolean;
   translations: Partial<Record<LanguageCode, string>>;
@@ -48,6 +49,7 @@ export interface ReportBlock {
   title: string;
   text: string;
   detail: string;
+  options?: { label: string; text: string; source_segment_ids: string[] }[];
   source_segment_ids: string[];
 }
 
@@ -182,6 +184,7 @@ export interface SessionStatePayload {
 }
 
 export type SessionEvent =
+  | { type: "audio_level"; payload: { level: number; db: number } }
   | { type: "session_sync"; payload: { state: SessionStatePayload; segments: TranscriptSegment[]; snapshots: SummarySnapshot[]; notes: Note[]; report: ReportRevision | null; preview: TranscriptSegment | null } }
   | { type: "transcript_segment"; payload: TranscriptSegment }
   | { type: "transcript_segment_removed"; payload: { segment_id: string } }

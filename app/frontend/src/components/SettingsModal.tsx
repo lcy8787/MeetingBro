@@ -1,27 +1,45 @@
 import { t, useI18n } from "../i18n";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
+import "../recorderSettings.css";
 import type { AppSettings } from "../meetingbro-bridge";
 import { fetchConfig, testLlm, fetchOllamaModels } from "../system/backendApi";
 import type { BackendConfig, TestLlmResult } from "../system/backendApi";
+
+type SettingsTab = "recording" | "models" | "diagnostics";
 
 interface SettingsModalProps {
   open: boolean;
   onClose: () => void;
   sessionActive: boolean;
+  recordingControls?: ReactNode;
+  diagnostics?: ReactNode;
+  initialTab?: SettingsTab;
 }
 
 const PROVIDER_PRESETS: Record<string, { baseUrl: string; model: string }> = {
   OpenAI: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini" },
   Ollama: { baseUrl: "http://127.0.0.1:11434/v1", model: "qwen2.5:3b" },
+  OpenRouter: { baseUrl: "https://openrouter.ai/api/v1", model: "openrouter/auto" },
   LongCat: { baseUrl: "https://api.longcat.chat/openai", model: "LongCat-Flash-Chat" },
 };
 
-const WHISPER_SIZES = ["auto", "tiny", "base", "small", "medium", "large-v2", "large-v3", "large-v3-turbo"];
-// Large tiers are slow on CPU; surface a GPU-recommended hint when no CUDA is available.
-const GPU_RECOMMENDED_SIZES = new Set(["large-v2", "large-v3", "large-v3-turbo"]);
+export function SettingsModal({ open, ...props }: SettingsModalProps) {
+  return open ? <SettingsDialog {...props} /> : null;
+}
 
-export function SettingsModal({ open, onClose, sessionActive }: SettingsModalProps) {
-  useI18n();
+function SettingsDialog({ onClose, sessionActive, recordingControls, diagnostics, initialTab }: Omit<SettingsModalProps, "open">) {
+  const { language } = useI18n();
+  const chinese = language === "zh-Hant";
+  const sections: { id: SettingsTab; label: string }[] = [];
+  if (recordingControls) sections.push({ id: "recording", label: chinese ? "錄音" : "Recording" });
+  sections.push({ id: "models", label: chinese ? "模型" : "Models" });
+  if (diagnostics) sections.push({ id: "diagnostics", label: chinese ? "診斷" : "Diagnostics" });
+  const [tab, setTab] = useState<SettingsTab>(() => sections.find(section => section.id === initialTab)?.id ?? sections[0].id);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const id = useId();
+  const [loadError, setLoadError] = useState("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const bridge = typeof window !== "undefined" ? window.meetingbro : undefined;
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [config, setConfig] = useState<BackendConfig | null>(null);
@@ -33,14 +51,40 @@ export function SettingsModal({ open, onClose, sessionActive }: SettingsModalPro
   const [saveNote, setSaveNote] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!open) return;
-    setSaveNote(null);
-    setTestResult(null);
-    bridge?.getSettings?.().then(setSettings).catch(() => {});
-    fetchConfig().then(setConfig).catch(() => setConfig(null));
-  }, [open, bridge]);
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const opener = document.activeElement;
+    dialog.showModal();
+    dialog.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]')?.focus();
+    return () => {
+      dialog.close();
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus({ preventScroll: true });
+    };
+  }, []);
 
-  if (!open) return null;
+  useEffect(() => {
+    let ignore = false;
+    setLoadError("");
+    bridge?.getSettings?.()
+      .then(value => { if (!ignore) setSettings(value); })
+      .catch((err: Error) => { if (!ignore) setLoadError(err.message); });
+    fetchConfig().then(value => { if (!ignore) setConfig(value); }).catch(() => {});
+    return () => { ignore = true; };
+  }, [bridge, loadAttempt]);
+
+  function navigateTabs(event: KeyboardEvent<HTMLButtonElement>, index: number) {
+    let next: number;
+    switch (event.key) {
+      case "ArrowLeft": next = (index - 1 + sections.length) % sections.length; break;
+      case "ArrowRight": next = (index + 1) % sections.length; break;
+      case "Home": next = 0; break;
+      case "End": next = sections.length - 1; break;
+      default: return;
+    }
+    event.preventDefault();
+    setTab(sections[next].id);
+    event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+  }
 
   const hasBridge = Boolean(bridge?.saveSettings);
 
@@ -84,49 +128,66 @@ export function SettingsModal({ open, onClose, sessionActive }: SettingsModalPro
     }
   };
 
-  const recommended = config?.hardware.recommended_whisper_size;
-  const cudaAvailable = Boolean(config?.cuda_available);
-  const nativeEngine = settings?.whisperEngine === "whisper-cpp" || (settings?.whisperEngine === "auto" && config?.metal_available);
-  const qwenEngine = settings?.whisperEngine === "qwen3-mlx" || (settings?.whisperEngine === "auto" && config?.whisper_engine === "qwen3-mlx");
-  const showGpuSizeHint = Boolean(settings && GPU_RECOMMENDED_SIZES.has(settings.whisperSize) && !cudaAvailable && !nativeEngine);
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={t("Settings")} onClick={onClose}>
-      <div className="modal modal--settings" onClick={(e) => e.stopPropagation()}>
-        <div className="modal__header">
-          <h2>{t("Settings")}</h2>
-          <button type="button" className="modal__close" onClick={onClose} aria-label={t("Close")}>×</button>
-        </div>
-
-        {!hasBridge && (
-          <p className="modal__notice">{t("In-app settings are available in the desktop app. In a browser, configure the backend via its .env file.")}</p>
+    <dialog
+      ref={dialogRef}
+      className="recorder-settings"
+      aria-labelledby={`${id}-title`}
+      onCancel={(event) => { event.preventDefault(); onClose(); }}
+      onClick={(event) => {
+        if (event.target !== event.currentTarget) return;
+        const rect = event.currentTarget.getBoundingClientRect();
+        if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) onClose();
+      }}
+    >
+      <header className="recorder-settings__header">
+        <h2 id={`${id}-title`}>{t("Settings")}</h2>
+        <button type="button" className="recorder-settings__close" onClick={onClose} aria-label={t("Close")}>×</button>
+      </header>
+      <div className="recorder-settings__tabs" role="tablist" aria-label={t("Settings")}>
+        {sections.map((section, index) => (
+          <button
+            key={section.id}
+            type="button"
+            role="tab"
+            id={`${id}-${section.id}-tab`}
+            aria-selected={section.id === tab}
+            aria-controls={`${id}-${section.id}-panel`}
+            tabIndex={section.id === tab ? 0 : -1}
+            onClick={() => setTab(section.id)}
+            onKeyDown={event => navigateTabs(event, index)}
+          >
+            {section.label}
+          </button>
+        ))}
+      </div>
+      <div key={tab} role="tabpanel" id={`${id}-${tab}-panel`} aria-labelledby={`${id}-${tab}-tab`} tabIndex={0} className="recorder-settings__panel">
+        {tab === "recording" && recordingControls}
+        {tab === "diagnostics" && diagnostics}
+        {tab === "models" && !hasBridge && (
+          <p className="settings-hint">{t("In-app settings are available in the desktop app. In a browser, configure the backend via its .env file.")}</p>
         )}
-
-        {settings && (
-          <div className="modal__body">
+        {tab === "models" && hasBridge && !settings && (
+          loadError ? <p role="alert">{loadError} <button type="button" className="settings-btn" onClick={() => setLoadAttempt(n => n + 1)}>{t("Retry")}</button></p> : <p role="status">{t("Loading…")}</p>
+        )}
+        {tab === "models" && settings && (
+          <>
             <section className="settings-section">
               <h3>{t("AI summaries (optional)")}</h3>
+              <p className="settings-hint">{chinese ? "選擇 OpenRouter，填入 API Key 及模型 ID，即可產生互動 HTML 總結。使用雲端供應商時，逐字稿會傳送至該供應商。" : "Choose OpenRouter and enter an API key and model ID for interactive HTML summaries. Cloud providers receive the transcript."}</p>
               <p className="settings-hint">{t("Choose an installed local Ollama model for private summaries. Other providers require their own settings.")}</p>
-              <p className="settings-hint">{t("Offline extracts preserve the original language; Chinese text is converted to Traditional Chinese.")}</p>
-              <label className="settings-field">
-                <span><input type="checkbox" checked={settings.liveSummariesEnabled} onChange={(e) => update({ liveSummariesEnabled: e.target.checked })} /> {t("Generate summaries during recording")}</span>
-              </label>
-              <label className="settings-field">
-                <span><input type="checkbox" checked={settings.finalSummaryEnabled} onChange={(e) => update({ finalSummaryEnabled: e.target.checked })} /> {t("Generate final summary after recording")}</span>
-              </label>
-              <p className="settings-hint">{t("Turn off live summaries to reserve resources for captions. Manual summary requests remain available.")}</p>
+              <p className="settings-hint">{t("Use Generate summary or the automatic summary switch on the summary page. Without a successful model result, only the transcript is available.")}</p>
               <label className="settings-field">
                 <span>{t("Inference resource mode")}</span>
-                <select value={settings.llmResourceMode} onChange={(e) => update({ llmResourceMode: e.target.value as AppSettings["llmResourceMode"] })}>
+                <select value={settings.llmResourceMode === "realtime" ? "realtime" : "balanced"} onChange={(e) => update({ llmResourceMode: e.target.value as AppSettings["llmResourceMode"] })}>
                   <option value="realtime">{t("Realtime priority")}</option>
                   <option value="balanced">{t("Balanced")}</option>
-                  <option value="post_recording">{t("Post-recording summaries")}</option>
                 </select>
               </label>
-              {settings.llmResourceMode === "post_recording" && <p className="settings-hint">{t("Automatic live summaries are paused in this mode; final summary remains separately configurable.")}</p>}
               <label className="settings-field">
                 <span>{t("Provider preset")}</span>
-                <select onChange={(e) => applyProvider(e.target.value)} defaultValue="">
+                <select onChange={(e) => applyProvider(e.target.value)} value={Object.entries(PROVIDER_PRESETS).find(([, preset]) => preset.baseUrl === settings.llm.baseUrl)?.[0] ?? ""}>
                   <option value="" disabled>{t("Choose…")}</option>
                   {Object.keys(PROVIDER_PRESETS).map((name) => <option key={name} value={name}>{name}</option>)}
                 </select>
@@ -148,11 +209,11 @@ export function SettingsModal({ open, onClose, sessionActive }: SettingsModalPro
                   try {
                     const result = await fetchOllamaModels();
                     setOllamaModels(result.models);
-                    setOllamaStatus(result.ok ? `Ollama: ${result.models.length} models` : `Ollama: ${result.error}`);
+                    setOllamaStatus(result.ok ? (chinese ? `已找到 ${result.models.length} 個模型` : `${result.models.length} models found`) : `Ollama: ${result.error}`);
                   } catch (err) { setOllamaStatus(`Ollama: ${(err as Error).message}`); }
-                }}>Refresh local Ollama models</button>
-                {ollamaModels.length > 0 && <select aria-label="Ollama model" value={ollamaModels.includes(settings.llm.model) ? settings.llm.model : ""} onChange={(e) => updateLlm({baseUrl: "http://127.0.0.1:11434/v1", model: e.target.value})}>
-                  <option value="" disabled>Select installed model</option>
+                }}>{chinese ? "重新整理本機 Ollama 模型" : "Refresh local Ollama models"}</button>
+                {ollamaModels.length > 0 && <select aria-label={chinese ? "Ollama 模型" : "Ollama model"} value={ollamaModels.includes(settings.llm.model) ? settings.llm.model : ""} onChange={(e) => updateLlm({baseUrl: "http://127.0.0.1:11434/v1", model: e.target.value})}>
+                  <option value="" disabled>{chinese ? "選擇已安裝的模型" : "Select installed model"}</option>
                   {ollamaModels.map((model) => <option key={model} value={model}>{model}</option>)}
                 </select>}
                 {ollamaStatus && <span>{ollamaStatus}</span>}
@@ -172,63 +233,30 @@ export function SettingsModal({ open, onClose, sessionActive }: SettingsModalPro
             <section className="settings-section">
               <h3>{t("Speech model")}</h3>
               <label className="settings-field">
-                <span>{t("Recognition engine")}</span>
-                <select value={settings.whisperEngine ?? "auto"} onChange={(e) => update({ whisperEngine: e.target.value as AppSettings["whisperEngine"], whisperDevice: "auto" })}>
-                  <option value="auto">{t("Auto")}</option>
-                  <option value="qwen3-mlx">Qwen3-ASR 0.6B (MLX)</option>
-                  <option value="faster-whisper">{t("faster-whisper (CPU / CUDA)")}</option>
-                  <option value="whisper-cpp">{t("whisper.cpp (Apple Metal / CPU)")}</option>
+                <span>Qwen3-ASR</span>
+                <select value={settings.qwenModelSize} onChange={e => update({ qwenModelSize: e.target.value as AppSettings["qwenModelSize"] })}>
+                  <option value="0.6B">0.6B · {chinese ? "輕量快速" : "Lightweight"}</option>
+                  <option value="1.7B">1.7B · {chinese ? "高準確度" : "Higher accuracy"}</option>
                 </select>
               </label>
-              <p className="settings-hint">{t("Active:")}{" "}{config?.whisper_engine ?? "faster-whisper"} · {config?.whisper_device ?? "loading"}{t(". Models must already be installed locally; changing these settings does not approve a download.")}</p>
-              {qwenEngine && <p className="settings-hint">{t("Qwen3 MLX uses a local model and shares it between preview and final captions. Whisper settings apply only when a Whisper engine is selected.")}</p>}
-              <label className="settings-field">
-                <span>{t("Model size")}</span>
-                <select disabled={qwenEngine} value={settings.whisperSize} onChange={(e) => update({ whisperSize: e.target.value })}>
-                  {WHISPER_SIZES.map((size) => (
-                    <option key={size} value={size}>
-                      {size === "auto" && recommended ? t("Auto (recommended: {0})", recommended) : size}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {showGpuSizeHint && (
-                <p className="settings-hint">
-                  {settings?.whisperSize === "large-v3-turbo"
-                    ? t("large-v3-turbo is fastest among the large models but still GPU-recommended — on CPU it runs well below real time.")
-                    : t("Large models are GPU-recommended — on CPU they run well below real time. Try small/medium, or large-v3-turbo if you need top accuracy.")}
-                </p>
-              )}
-              <label className="settings-field">
-                <span>{t("Compute device")}</span>
-                <select disabled={qwenEngine} value={settings.whisperDevice} onChange={(e) => update({ whisperDevice: e.target.value })}>
-                  <option value="auto">{t("Auto")}</option>
-                  <option value="cpu">CPU</option>
-                  {!nativeEngine && config?.cuda_available && <option value="cuda">{t("GPU (CUDA)")}</option>}
-                  {nativeEngine && config?.metal_available && <option value="metal">{t("Apple GPU (Metal)")}</option>}
-                </select>
-              </label>
-              <label className="settings-field">
-                <span>{t("Live caption preview")}</span>
-                <select disabled={qwenEngine} value={settings.previewBackend} onChange={(e) => update({ previewBackend: e.target.value as AppSettings["previewBackend"] })}>
-                  <option value="qwen3">{t("Qwen3-ASR (separate local model)")}</option>
-                  <option value="whisper-streaming">{t("Whisper streaming (reuse speech model)")}</option>
-                  <option value="shared">{t("Off (formal transcript only)")}</option>
-                </select>
-              </label>
+              <p className="settings-hint">{chinese ? "即時字幕及正式逐字稿共用所選 Qwen3 模型。" : "Live captions and final transcripts share the selected Qwen3 model."}</p>
+              <p className="settings-hint">{chinese ? "模型須先安裝於本機；儲存後重新啟動後端套用。" : "Install the model locally first; saving restarts the backend to apply it."}</p>
+              <p className="settings-hint">{t("Active:")} {config?.asr_engine ?? "Qwen3"} · {config?.asr_size ?? "0.6B"}</p>
             </section>
-          </div>
+          </>
         )}
-
-        <div className="modal__footer">
-          {saveNote && <span className="settings-save-note">{t(saveNote)}</span>}
-          {sessionActive && <span className="settings-hint">{t("Model/key changes apply after the current session ends.")}</span>}
-          <button type="button" className="settings-btn" onClick={onClose}>{t("Close")}</button>
-          <button type="button" className="settings-btn settings-btn--primary" onClick={onSave} disabled={!hasBridge || saving || !settings}>
+      </div>
+      {tab === "models" && hasBridge && (
+        <footer className="recorder-settings__footer">
+          <div role="status">
+            {saveNote && <span className="settings-save-note">{t(saveNote)}</span>}
+            {sessionActive && <span className="settings-hint">{t("Model/key changes apply after the current session ends.")}</span>}
+          </div>
+          <button type="button" className="settings-btn settings-btn--primary" onClick={onSave} disabled={saving || !settings}>
             {saving ? t("Saving…") : t("Save & apply")}
           </button>
-        </div>
-      </div>
-    </div>
+        </footer>
+      )}
+    </dialog>
   );
 }

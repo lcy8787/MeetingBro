@@ -139,6 +139,9 @@ class Storage:
                     FOREIGN KEY(meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
                 )""")
                 self._conn.execute("INSERT INTO meetingbro_migrations(version) VALUES (3)")
+            if not self._conn.execute("SELECT 1 FROM meetingbro_migrations WHERE version = 4").fetchone():
+                self._conn.execute("ALTER TABLE summary_snapshots ADD COLUMN generation_method TEXT NOT NULL DEFAULT 'unknown'")
+                self._conn.execute("INSERT INTO meetingbro_migrations(version) VALUES (4)")
             self._conn.commit()
         except Exception:
             self._conn.rollback()
@@ -148,6 +151,7 @@ class Storage:
         """Append a revision after checking that every cited segment belongs to the meeting."""
         blocks = [*report.document.takeaways, *(b for s in report.document.sections for b in s.blocks)]
         citations = {source for block in blocks for source in block.source_segment_ids}
+        citations.update(source for block in blocks for option in block.options for source in option.source_segment_ids)
         citations.update(report.document.executive_summary_source_segment_ids)
         with self._lock:
             try:
@@ -225,6 +229,14 @@ class Storage:
             self._conn.execute("UPDATE final_summary_jobs SET status='queued', updated_at=? WHERE status='running'", (_iso(_utc_now()),))
             self._conn.commit()
 
+    def suspend_pending_final_summary_jobs(self) -> None:
+        """Require an explicit retry for old jobs when opening the summary UI."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE final_summary_jobs SET status='failed', error=?, updated_at=? WHERE status IN ('queued', 'running')",
+                ('Automatic summary is off. Generate a summary or explicitly retry this job.', _iso(_utc_now())))
+            self._conn.commit()
+
     def claim_final_summary_job(self) -> Optional[dict]:
         with self._lock:
             try:
@@ -247,7 +259,7 @@ class Storage:
             self._conn.execute("UPDATE final_summary_jobs SET status='failed', error=?, updated_at=? WHERE id=? AND status='running'", (error[:500], _iso(_utc_now()), job_id))
             self._conn.commit()
 
-    def complete_final_summary_job(self, job_id: str, snapshots: list[SummarySnapshot]) -> bool:
+    def complete_final_summary_job(self, job_id: str, snapshots: list[SummarySnapshot], report: ReportRevision | None = None) -> bool:
         with self._lock:
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
@@ -255,15 +267,28 @@ class Storage:
                 if row is None:
                     self._conn.rollback()
                     return False
+                if report is not None:
+                    if report.meeting_id != row[0] or report.revision != 1:
+                        raise ValueError("Invalid final report identity")
+                    blocks = [*report.document.takeaways, *(block for section in report.document.sections for block in section.blocks)]
+                    citations = {key for block in blocks for key in block.source_segment_ids}
+                    citations.update(key for block in blocks for option in block.options for key in option.source_segment_ids)
+                    citations.update(report.document.executive_summary_source_segment_ids)
+                    valid = {r[0] for r in self._conn.execute("SELECT id FROM transcript_segments WHERE meeting_id=?", (row[0],))}
+                    if not citations <= valid:
+                        raise ValueError("Final report references missing sources")
+                    self._conn.execute("INSERT INTO report_revisions VALUES (?, ?, ?, ?, ?, ?)",
+                        (report.report_id, report.meeting_id, report.report_type, report.revision,
+                         report.document.model_dump_json(), _iso(report.created_at)))
                 for snap in snapshots:
                     if snap.meeting_id != row[0]:
                         raise ValueError("Snapshot does not belong to this job")
                     self._conn.execute("UPDATE summary_snapshots SET is_latest=0 WHERE meeting_id=? AND summary_type=?", (snap.meeting_id, snap.summary_type))
                     self._conn.execute("""INSERT INTO summary_snapshots
-                        (id, meeting_id, summary_type, time_start, time_end, language, content, source_segment_ids, is_latest, translations, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (id, meeting_id, summary_type, time_start, time_end, language, content, source_segment_ids, is_latest, translations, created_at, generation_method)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (snap.id, snap.meeting_id, snap.summary_type, snap.time_start, snap.time_end, snap.language, snap.content,
-                         json.dumps(snap.source_segment_ids), 1, json.dumps(snap.translations), _iso(snap.created_at)))
+                         json.dumps(snap.source_segment_ids), 1, json.dumps(snap.translations), _iso(snap.created_at), snap.generation_method))
                 self._conn.execute("UPDATE final_summary_jobs SET status='succeeded', error=NULL, updated_at=? WHERE id=?", (_iso(_utc_now()), job_id))
                 self._conn.commit()
                 return True
@@ -354,7 +379,7 @@ class Storage:
 
     def delete_meeting(self, meeting_id: str) -> None:
         """Delete a meeting and all of its child rows (transcript, summaries, notes, speakers)."""
-        with self._lock:
+        with self._lock, self._conn:
             for table in ("transcript_segments", "summary_snapshots", "notes", "speakers"):
                 self._conn.execute(f"DELETE FROM {table} WHERE meeting_id = ?", (meeting_id,))
             self._conn.execute("DELETE FROM meetings WHERE id = ?", (meeting_id,))
@@ -445,8 +470,8 @@ class Storage:
                 """
                 INSERT OR REPLACE INTO summary_snapshots
                   (id, meeting_id, summary_type, time_start, time_end, language, content,
-                   source_segment_ids, is_latest, translations, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   source_segment_ids, is_latest, translations, created_at, generation_method)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     snap.id,
@@ -460,6 +485,7 @@ class Storage:
                     1 if snap.is_latest else 0,
                     json.dumps(dict(snap.translations)),
                     _iso(snap.created_at),
+                    snap.generation_method,
                 ),
             )
             self._conn.commit()
@@ -471,7 +497,7 @@ class Storage:
     ) -> list[SummarySnapshot]:
         query = (
             "SELECT id, meeting_id, summary_type, time_start, time_end, language, content, "
-            "source_segment_ids, is_latest, translations, created_at FROM summary_snapshots "
+            "source_segment_ids, is_latest, translations, created_at, generation_method FROM summary_snapshots "
             "WHERE meeting_id = ?"
         )
         params: list[object] = [meeting_id]
@@ -494,6 +520,7 @@ class Storage:
                 is_latest=bool(r[8]),
                 translations=json.loads(r[9] or "{}"),
                 created_at=datetime.fromisoformat(r[10]),
+                generation_method=r[11],
             )
             for r in rows
         ]

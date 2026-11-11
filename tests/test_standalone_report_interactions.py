@@ -23,7 +23,7 @@ class Templates(HTMLParser):
 
 
 def test_copy_templates_include_hidden_sections_and_escape_input(tmp_path):
-    document = ReportDocument(title='Report', executive_summary='Summary', sections=[
+    document = ReportDocument(generation_method='llm', title='Report', executive_summary='Summary', sections=[
         ReportSection(title='First', blocks=[ReportBlock(text='First detail')]),
         ReportSection(title='Second', blocks=[ReportBlock(text='</template><script>alert(1)</script>')]),
     ])
@@ -40,42 +40,40 @@ def test_copy_templates_include_hidden_sections_and_escape_input(tmp_path):
     assert parser.values['copy-2'].startswith('Second')
 
 
-def test_presentation_and_copy_logic_without_a_browser(tmp_path):
+def test_option_switch_and_copy_logic_without_a_browser(tmp_path):
     harness = r'''
 const assert = require('node:assert/strict');
 class Element {
-  constructor() { this.hidden = false; this.disabled = false; this.textContent = ''; this.listeners = {}; this.style = {}; }
+  constructor() { this.hidden = false; this.textContent = ''; this.listeners = {}; this.style = {}; this.attrs = {}; }
   addEventListener(type, callback) { this.listeners[type] = callback; }
   click() { this.listeners.click?.(); }
-  setAttribute() {} select() {} remove() {}
+  setAttribute(key, value) { this.attrs[key] = value; } select() {} remove() {}
 }
-const sections = [new Element(), new Element()];
-const elements = Object.fromEntries(['mode','pager','prev','next','counter','toc','fullscreen','copy-status'].map(k => [k,new Element()]));
-elements['copy-full'] = {content:{textContent:'Title\nFirst section\nSecond section'}};
+const buttons = [new Element(), new Element()], panels = [new Element(), new Element()];
+const group = {querySelectorAll: q => q === 'button' ? buttons : panels};
+const status = new Element();
+const template = {content:{textContent:'Full report including hidden explanations'}};
 const copyButton = new Element(); copyButton.dataset = {copy:'copy-full'};
-let keyHandler, clipboard = '';
+let clipboard = '';
 global.document = {
-  querySelectorAll: q => q === '[data-section]' ? sections : [copyButton],
-  getElementById: id => elements[id],
-  addEventListener: (event, fn) => { if (event === 'keydown') keyHandler = fn; },
-  documentElement: {}, createElement: () => new Element(), body: {appendChild() {}}, execCommand: () => true,
+  querySelectorAll: q => q === '[data-copy]' ? [copyButton] : [group],
+  getElementById: id => id === 'copy-status' ? status : template,
+  createElement: () => new Element(), body: {appendChild() {}}, execCommand: () => true,
 };
 Object.defineProperty(global, 'navigator', {value:{clipboard:{writeText: async text => { clipboard = text; }}}, configurable:true});
 '''
     checks = r'''
 (async () => {
-  elements.mode.click();
-  assert.equal(sections[0].hidden, false); assert.equal(sections[1].hidden, true);
-  elements.next.click();
-  assert.equal(elements.counter.textContent, '2 / 2'); assert.equal(sections[0].hidden, true);
+  buttons[1].click();
+  assert.equal(buttons[1].attrs['aria-pressed'], 'true');
+  assert.equal(buttons[0].attrs['aria-pressed'], 'false');
+  assert.equal(panels[0].hidden, true); assert.equal(panels[1].hidden, false);
   copyButton.click(); await new Promise(resolve => setImmediate(resolve));
-  assert.match(clipboard, /First section/); assert.match(clipboard, /Second section/);
-  assert.equal(elements['copy-status'].textContent, 'Copied / 已複製');
-  keyHandler({key:'ArrowLeft',target:{tagName:'BODY'}});
-  assert.equal(elements.counter.textContent, '1 / 2');
+  assert.match(clipboard, /hidden explanations/);
+  assert.equal(status.textContent, 'Copied / 已複製');
   Object.defineProperty(global, 'navigator', {value:{}, configurable:true});
   copyButton.click(); await new Promise(resolve => setImmediate(resolve));
-  assert.equal(elements['copy-status'].textContent, 'Copied / 已複製');
+  assert.equal(status.textContent, 'Copied / 已複製');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 '''
     path = tmp_path / 'test.cjs'

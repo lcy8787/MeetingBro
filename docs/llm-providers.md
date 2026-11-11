@@ -9,8 +9,11 @@ MEETINGBRO_LLM_BASE_URL=https://api.openai.com/v1
 MEETINGBRO_LLM_MODEL=gpt-4o-mini
 ```
 
-**If you leave these unset**, MeetingBro still works: transcription runs locally via Whisper,
-and summaries fall back to local heuristics (bullet-point extraction without LLM quality).
+**If you leave these unset**, MeetingBro still works: transcription runs locally via Qwen3-ASR,
+and no summary or HTML report is published until a summary model succeeds.
+The summary page offers manual generation and opt-in periodic updates (first
+check at 5 minutes, then every 10 minutes after the first successful summary).
+Stopping a recording separately generates one final summary; model charges may apply.
 
 ---
 
@@ -43,6 +46,8 @@ MEETINGBRO_LLM_MODEL=gpt-4o-mini
 ---
 
 ### 2. OpenRouter
+
+In the desktop app, choose **Settings → Models → Provider preset → OpenRouter**, enter your API key and model ID, test the connection, then save. This provider is used for both automatic final interactive HTML summaries and manual report generation. Report content is validated and rendered using built-in HTML controls; provider-generated JavaScript is never executed.
 
 An aggregator that routes to 200+ models from OpenAI, Anthropic, Meta, Mistral, and others through a single API. Useful if you want to switch models without changing infrastructure.
 
@@ -217,6 +222,17 @@ MEETINGBRO_LLM_MODEL=bedrock/anthropic.claude-3-haiku-20240307-v1:0
 
 ## Privacy reminder
 
-Only the **text transcript** is sent to the LLM provider you configure. Audio capture and Whisper transcription run entirely on your machine. If you use a local LLM such as Ollama, no data leaves your device at all.
+Only the **text transcript** is sent to the LLM provider you configure. Audio capture and Qwen3 transcription run entirely on your machine. If you use a local LLM such as Ollama, no data leaves your device at all.
 
 To verify this, see [app/backend/meetingbro/llm/openai_compatible.py](../app/backend/meetingbro/llm/openai_compatible.py).
+
+## OpenRouter reasoning models
+
+MeetingBro reads the public model capabilities once per backend process. For models
+that support disabling reasoning, summaries disable it to reserve output tokens
+for the actual report. Mandatory reasoning uses the lowest advertised effort.
+OpenRouter reports use a strict JSON schema and require a provider that supports
+the request parameters. Reasoning text is never accepted as the final answer,
+and truncated or empty answers fail without a hidden paid repair request.
+Chinese-number statistics (such as 四十七點八度) are accepted only when supported
+by the cited transcript.

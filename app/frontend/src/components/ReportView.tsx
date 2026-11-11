@@ -8,10 +8,20 @@ interface Props {
 }
 
 function Block({ block, sources }: { block: ReportBlock; sources: Map<string, TranscriptSegment> }) {
-  const evidence = block.source_segment_ids.map((id) => sources.get(id)).filter((s): s is TranscriptSegment => !!s);
+  const [choice, setChoice] = useState(0);
+  const [done, setDone] = useState(false);
+  const selected = block.options?.[choice];
+  const sourceIds = [...new Set([...block.source_segment_ids, ...(selected?.source_segment_ids ?? [])])];
+  const evidence = sourceIds.map((id) => sources.get(id)).filter((s): s is TranscriptSegment => !!s);
   return <article className={`report-card report-card--${block.type}`}>
     {block.title && <h4>{block.title}</h4>}
-    <p>{block.text}</p>
+    {block.type === "action" ? <label className="report-action"><input type="checkbox" checked={done} onChange={e => setDone(e.target.checked)} /><span className={done ? "is-done" : ""}>{block.text}</span></label> : <p>{block.text}</p>}
+    {!!block.options?.length && <div className="report-interaction">
+      <div className="report-choice-buttons" role="group" aria-label={block.title || t("Explore options")}>
+        {block.options.map((option, index) => <button key={index} type="button" aria-pressed={index === choice} onClick={() => setChoice(index)}>{option.label}</button>)}
+      </div>
+      <div className="report-choice-result" role="status" aria-live="polite"><strong>{selected?.label}</strong><p>{selected?.text}</p></div>
+    </div>}
     {block.detail && <details><summary>{t("Details")}</summary><p>{block.detail}</p></details>}
     {evidence.length > 0 && <details className="report-card__evidence"><summary>{t("View transcript sources")}</summary>
       {evidence.map((segment) => <blockquote key={segment.id}>{segment.text}</blockquote>)}
@@ -23,8 +33,6 @@ export function ReportView({ report, transcript }: Props) {
   const { document: doc } = report;
   const root = useRef<HTMLDivElement>(null);
   const sectionRefs = useRef<Array<HTMLElement | null>>([]);
-  const [presentation, setPresentation] = useState(false);
-  const [slide, setSlide] = useState(0);
   const [message, setMessage] = useState("");
   const sources = new Map(transcript.map((segment) => [segment.id, segment]));
   const copy = async (text: string) => {
@@ -33,10 +41,10 @@ export function ReportView({ report, transcript }: Props) {
   };
   const sectionText = (index: number) => {
     const section = doc.sections[index];
-    return [section.title, ...section.blocks.map((b) => [b.title, b.text, b.detail].filter(Boolean).join("\n"))].join("\n\n");
+    return [section.title, ...section.blocks.map((b) => [b.title, b.text, b.detail, ...(b.options ?? []).flatMap(option => [option.label, option.text])].filter(Boolean).join("\n"))].join("\n\n");
   };
+  if (doc.generation_method !== "llm") return null;
   const scrollToSection = (index: number) => sectionRefs.current[index]?.scrollIntoView({ behavior: "smooth", block: "start" });
-  const currentSlide = Math.min(slide, Math.max(0, doc.sections.length - 1));
   return <div className="report-view" ref={root}>
     <header className="report-hero">
       <div className="report-eyebrow">{t("MEETING REPORT")} · {t("Revision {0}", report.revision)}</div>
@@ -45,28 +53,21 @@ export function ReportView({ report, transcript }: Props) {
       <div className="report-meta">{t("Generated from transcript")} · {new Date(report.created_at).toLocaleString()}</div>
       {doc.warnings.map((warning, i) => <p className="report-warning" role="status" key={i}>{t(warning)}</p>)}
       <div className="report-controls">
-        <button type="button" onClick={() => setPresentation(!presentation)}>{presentation ? t("Reading mode") : t("Presentation mode")}</button>
-        {presentation && <button type="button" onClick={() => { void root.current?.requestFullscreen?.().catch(() => setMessage(t("Full screen unavailable"))); }}>{t("Full screen")}</button>}
-        <button type="button" onClick={() => void copy([doc.title, doc.executive_summary, ...doc.takeaways.map((block) => [block.title, block.text, block.detail].filter(Boolean).join("\n")), ...doc.sections.map((_, i) => sectionText(i))].filter(Boolean).join("\n\n"))}>{t("Copy report")}</button>
+        <button type="button" onClick={() => void copy([doc.title, doc.executive_summary, ...doc.takeaways.map((block) => [block.title, block.text, block.detail, ...(block.options ?? []).flatMap(option => [option.label, option.text])].filter(Boolean).join("\n")), ...doc.sections.map((_, i) => sectionText(i))].filter(Boolean).join("\n\n"))}>{t("Copy report")}</button>
         <span role="status" aria-live="polite">{message}</span>
       </div>
-      {doc.takeaways.length > 0 && <div className="report-grid">{doc.takeaways.map((block, i) => <Block key={i} block={block} sources={sources} />)}</div>}
+      {doc.takeaways.length > 0 && <div className="report-grid">{doc.takeaways.map((block, i) => <Block key={`${report.revision}-takeaway-${i}`} block={block} sources={sources} />)}</div>}
     </header>
-    {!presentation && <nav className="report-nav" aria-label={t("Report contents")}>
+    <nav className="report-nav" aria-label={t("Report contents")}>
       {doc.sections.map((section, i) => <button key={i} type="button" onClick={() => scrollToSection(i)}>{String(i + 1).padStart(2, "0")} · {section.title}</button>)}
-    </nav>}
-    {presentation && <div className="report-controls report-pager">
-      <button type="button" disabled={currentSlide === 0} onClick={() => setSlide(currentSlide - 1)}>{t("Previous")}</button>
-      <span>{currentSlide + 1} / {doc.sections.length}</span>
-      <button type="button" disabled={currentSlide >= doc.sections.length - 1} onClick={() => setSlide(currentSlide + 1)}>{t("Next")}</button>
-    </div>}
-    {doc.sections.map((section, i) => <section hidden={presentation && i !== currentSlide} key={section.id || i} ref={(node) => { sectionRefs.current[i] = node; }} className={`report-section report-section--${section.layout_type}`}>
+    </nav>
+    {doc.sections.map((section, i) => <section key={section.id || i} ref={(node) => { sectionRefs.current[i] = node; }} className={`report-section report-section--${section.layout_type}`}>
       <div className="report-eyebrow">PART {String(i + 1).padStart(2, "0")}</div>
       <div className="report-section__heading"><h3>{section.title}</h3><button type="button" onClick={() => void copy(sectionText(i))}>{t("Copy section")}</button></div>
       <details open><summary>{t("Show or hide section")}</summary>
-        <div className={`report-grid report-grid--${section.layout_type}`}>{section.blocks.map((block, j) => <Block key={j} block={block} sources={sources} />)}</div>
+        <div className={`report-grid report-grid--${section.layout_type}`}>{section.blocks.map((block, j) => <Block key={`${report.revision}-${j}`} block={block} sources={sources} />)}</div>
       </details>
     </section>)}
-    {!presentation && <button className="report-top" type="button" onClick={() => root.current?.scrollIntoView({ behavior: "smooth" })}>{t("Back to top")}</button>}
+    <button className="report-top" type="button" onClick={() => root.current?.scrollIntoView({ behavior: "smooth" })}>{t("Back to top")}</button>
   </div>;
 }

@@ -1,14 +1,15 @@
 import { t, useI18n } from "./i18n";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import type { ExportMeetingResponse, SummarySnapshot, TranscriptSegment } from "./types";
+import type { ExportMeetingResponse, TranscriptSegment } from "./types";
 import { useSessionSocket } from "./session/useSessionSocket";
 import type { ExportMeetingInput } from "./session/useSessionSocket";
 import { useBackendStatus } from "./system/useBackendStatus";
 import { BackendGate } from "./components/BackendGate";
 import { SettingsModal } from "./components/SettingsModal";
-import { HistoryModal } from "./components/HistoryModal";
-import { ReportView } from "./components/ReportView";
+import { InputLevelPreview } from "./components/AudioLevelMeter";
+import { RecorderView } from "./components/RecorderView";
+import "./meetingWorkspace.css";
 import { fetchAudioDevices } from "./system/backendApi";
 import type { AudioDevices } from "./system/backendApi";
 
@@ -43,16 +44,6 @@ function formatRange(start: number, end: number): string {
     return `${m}:${sec}`;
   };
   return `${fmt(start)} – ${fmt(end)}`;
-}
-
-function formatApproxClock(iso: string | null, seconds: number): string {
-  if (!iso) return formatRange(seconds, seconds).slice(0, 5);
-  const dt = new Date(new Date(iso).getTime() + seconds * 1000);
-  return dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-
-function formatApproxClockRange(iso: string | null, start: number, end: number): string {
-  return `${formatApproxClock(iso, start)} – ${formatApproxClock(iso, end)}`;
 }
 
 function formatCreatedAt(iso: string): string {
@@ -92,18 +83,6 @@ function getConfidenceLabel(confidence: number): string | null {
   if (tone === "uncertain") return "uncertain";
   if (tone === "soft") return t("low conf");
   return null;
-}
-
-function isSystemHealthOnlyMessage(message: string | null): boolean {
-  if (!message) return false;
-  const normalized = message.toLowerCase();
-  return (
-    normalized.includes("asr is close to falling behind") ||
-    normalized.includes("temporarily skipping retry") ||
-    normalized.includes("asr has been processing") ||
-    normalized.includes("audio input is buffered") ||
-    normalized.includes("backlog")
-  );
 }
 
 function formatElapsedSeconds(seconds: number | null | undefined): string {
@@ -197,15 +176,6 @@ function defaultExportFolderName(): string {
   return `${timestamp}_meetingbro`;
 }
 
-function parseSnapshotList(content: string): Array<Record<string, unknown>> {
-  try {
-    const value = JSON.parse(content);
-    return Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => !!item && typeof item === "object") : [];
-  } catch {
-    return [];
-  }
-}
-
 function getMixedGainHint(
   tone: "ok" | "warn" | "danger" | "unknown",
   activeSource: string | null | undefined,
@@ -229,168 +199,6 @@ function isNearBottom(element: HTMLDivElement): boolean {
   return element.scrollHeight - element.scrollTop - element.clientHeight < 120;
 }
 
-interface SummaryPanelProps {
-  title: string;
-  subtitle: string;
-  snapshot: SummarySnapshot | undefined;
-  history: SummarySnapshot[];
-  sessionStartedAt: string | null;
-  accent: string;
-  className?: string;
-  compact?: boolean;
-  onSaveToNotes: (snapshot: SummarySnapshot) => Promise<void>;
-  onRefresh?: () => void;
-  refreshDisabled?: boolean;
-  refreshBusy?: boolean;
-}
-
-function SummaryPanel({ title, subtitle, snapshot, history, sessionStartedAt, accent, className, compact = false, onSaveToNotes, onRefresh, refreshDisabled = false, refreshBusy = false }: SummaryPanelProps) {
-  const displayedHistory = history.length > 0 ? history : snapshot ? [snapshot] : [];
-  const latestSnapshot = displayedHistory.at(-1) ?? snapshot;
-  const range = latestSnapshot
-    ? formatApproxClockRange(sessionStartedAt, latestSnapshot.time_start, latestSnapshot.time_end)
-    : "—";
-  const relativeRange = latestSnapshot
-    ? formatRange(latestSnapshot.time_start, latestSnapshot.time_end)
-    : "—";
-  const createdAt = latestSnapshot
-    ? new Date(latestSnapshot.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-    : "—";
-
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const autoFollowRef = useRef(true);
-  useI18n();
-  const [expanded, setExpanded] = useState(false);
-  useEffect(() => {
-    if (autoFollowRef.current && bodyRef.current) {
-      bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
-    }
-  }, [displayedHistory.length, latestSnapshot?.id]);
-
-  useEffect(() => {
-    if (!expanded) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setExpanded(false); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [expanded]);
-
-  const onCopy = async () => {
-    if (!latestSnapshot) return;
-    await navigator.clipboard.writeText(latestSnapshot.content);
-  };
-  const onExpand = () => {
-    if (!latestSnapshot) return;
-    setExpanded(true);
-  };
-  const onSave = async () => {
-    if (!latestSnapshot) return;
-    await onSaveToNotes(latestSnapshot);
-  };
-
-  const bodyJSX = (
-    <div
-      ref={bodyRef}
-      className="panel-body summary-history"
-      onScroll={(e) => {
-        autoFollowRef.current = isNearBottom(e.currentTarget);
-      }}
-    >
-      {displayedHistory.length === 0 ? (
-        t("waiting for the first snapshot…")
-      ) : (
-        displayedHistory.map((item, idx) => {
-          const itemRange = formatApproxClockRange(sessionStartedAt, item.time_start, item.time_end);
-          const itemRelativeRange = formatRange(item.time_start, item.time_end);
-          const itemCreatedAt = new Date(item.created_at).toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-            second: "2-digit",
-          });
-          const isLatest = idx === displayedHistory.length - 1;
-          return (
-            <article key={item.id} className={`summary-history-item ${isLatest ? "latest" : ""}`.trim()}>
-              <div className="summary-history-meta">
-                <span>{itemRange}</span>
-                <span>{itemRelativeRange}</span>
-                <span>{itemCreatedAt}</span>
-              </div>
-              <div>{item.content}</div>
-            </article>
-          );
-        })
-      )}
-    </div>
-  );
-
-  const footerJSX = (
-    <footer>
-      <button onClick={onRefresh} disabled={!onRefresh || refreshDisabled} className={refreshBusy ? "button-busy" : ""} aria-busy={refreshBusy}>
-        {refreshBusy ? t("Refreshing…") : t("Refresh")}
-      </button>
-      <button onClick={onCopy} disabled={!latestSnapshot}>{t("Copy Latest")}</button>
-      <button onClick={onExpand} disabled={!latestSnapshot}>{t("Expand")}</button>
-      <button onClick={onSave} disabled={!latestSnapshot}>{t("Save Latest")}</button>
-    </footer>
-  );
-
-  const modalJSX = expanded ? (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={t("{0} history", title)} onClick={() => setExpanded(false)}>
-      <div className="modal modal--summary" onClick={(e) => e.stopPropagation()}>
-        <div className="modal__header">
-          <h2>{title} <span className="modal__range">{range}</span></h2>
-          <button type="button" className="modal__close" onClick={() => setExpanded(false)} aria-label={t("Close")}>×</button>
-        </div>
-        <div className="modal__body summary-history">
-          {displayedHistory.length === 0 ? (
-            t("No snapshots yet.")
-          ) : (
-            displayedHistory.map((item, idx) => (
-              <article key={item.id} className="summary-history-item">
-                <div className="summary-history-meta">
-                  <span>#{idx + 1}</span>
-                  <span>{formatApproxClockRange(sessionStartedAt, item.time_start, item.time_end)}</span>
-                  <span>{formatRange(item.time_start, item.time_end)}</span>
-                </div>
-                <div>{item.content}</div>
-              </article>
-            ))
-          )}
-        </div>
-      </div>
-    </div>
-  ) : null;
-
-  if (compact) {
-    return (
-      <div className="workspace-tab-panel">
-        <div className="workspace-tab-meta">
-          <span className="summary-meta">{t("covered")}{" "}{relativeRange} {" "}{t("· updated")}{" "}{createdAt}</span>
-          <span className="range">{range}</span>
-        </div>
-        {bodyJSX}
-        {footerJSX}
-        {modalJSX}
-      </div>
-    );
-  }
-
-  return (
-    <section className={`panel ${className ?? ""}`.trim()} style={{ borderTop: `3px solid ${accent}` }}>
-      <header>
-        <div>
-          <h2>{title}</h2>
-          <p className="subtitle">{subtitle}</p>
-          <p className="summary-meta">{t("covered")}{" "}{relativeRange} {" "}{t("· updated")}{" "}{createdAt}</p>
-        </div>
-        <div className="range">{range}</div>
-      </header>
-      {bodyJSX}
-      {footerJSX}
-      {modalJSX}
-    </section>
-  );
-}
-
 export default function App() {
   const { language: uiLanguage, setLanguage: setUiLanguage } = useI18n();
   const [source, setSource] = useState("mixed");
@@ -406,23 +214,25 @@ export default function App() {
   const [exportIntent, setExportIntent] = useState<"manual" | "restart" | null>(null);
   const [actionFeedback, setActionFeedback] = useState<string | null>(null);
   const [bookmarkFeedback, setBookmarkFeedback] = useState<string | null>(null);
-  const [refreshingSummary, setRefreshingSummary] = useState<"rolling_summary" | "cumulative_meeting_summary" | "refined_transcript" | null>(null);
-  const [refreshBaselineId, setRefreshBaselineId] = useState<string | null>(null);
   const [bilingualExport, setBilingualExport] = useState(false);
   const [restartPromptOpen, setRestartPromptOpen] = useState(false);
-  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [diagnosticsMode, setDiagnosticsMode] = useState<"simple" | "advanced">(
     () => (window.localStorage.getItem("meetingbro.diagnosticsMode") === "advanced" ? "advanced" : "simple"),
   );
   const [computeActivityHold, setComputeActivityHold] = useState({ cpu: false, gpu: false });
-  const [vocabularyOpen, setVocabularyOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<"summary" | "clean" | "board" | "notes" | "report">("summary");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<"recording" | "models" | "diagnostics">("recording");
+  const [bookmarkLabel, setBookmarkLabel] = useState("");
   const [audioDevice, setAudioDevice] = useState("");
   const [loopbackDevice, setLoopbackDevice] = useState("");
   const [audioDevices, setAudioDevices] = useState<AudioDevices | null>(null);
-  const { connected, state, meetingId, sessionStartedAt, elapsedSeconds, sessionStats, segments, previewSegment, previewSegments, isExperimentalPreview, previewDisplayText, previewIsStreaming, departingPreviewSegments, latestByType, historyByType, liveReport, finalJob, notes, lastError, lastErrorCode, saveNote, saveBookmark, applyVocabulary, exportMeeting, requestSummary, pauseSession, resumeSession, stopSession } =
+  const [audioDeviceError, setAudioDeviceError] = useState(false);
+  const refreshAudioDevices = useCallback(async () => {
+    setAudioDeviceError(false);
+    try { setAudioDevices(await fetchAudioDevices()); }
+    catch { setAudioDeviceError(true); }
+  }, []);
+  const { connected, state, meetingId, sessionStartedAt, elapsedSeconds, sessionStats, audioLevel, segments, previewSegment, previewSegments, isExperimentalPreview, previewDisplayText, previewIsStreaming, departingPreviewSegments, latestByType, liveReport, finalJob, notes, lastError, lastErrorCode, saveBookmark, applyVocabulary, exportMeeting, pauseSession, resumeSession, stopSession } =
     useSessionSocket({ enabled: sessionEnabled, source, speechLanguage, summaryLanguage, subtitleLanguage, runtimeProfile, audioDevice, loopbackDevice });
 
   const backend = useBackendStatus();
@@ -439,8 +249,8 @@ export default function App() {
   }, []);
   useEffect(() => {
     if (!backend.isReady) return;
-    fetchAudioDevices().then(setAudioDevices).catch(() => setAudioDevices(null));
-  }, [backend.isReady]);
+    void refreshAudioDevices();
+  }, [backend.isReady, refreshAudioDevices]);
   // First run: open Settings once so a new user lands on configuration instead
   // of guessing. Marking firstRunComplete touches no startup keys, so it won't
   // restart the backend.
@@ -449,6 +259,7 @@ export default function App() {
     if (!bridge?.getSettings || !backend.isReady) return;
     bridge.getSettings().then((s) => {
       if (!s.firstRunComplete) {
+        setSettingsTab("models");
         setSettingsOpen(true);
         bridge.saveSettings?.({ firstRunComplete: true }).catch(() => {});
       }
@@ -471,10 +282,7 @@ export default function App() {
   }, [sessionEnabled]);
 
   const rolling = latestByType.rolling_summary;
-  const refined = latestByType.refined_transcript;
   const cumulative = latestByType.cumulative_meeting_summary;
-  const chapterSnapshot = latestByType.chapter_list;
-  const actionItemSnapshot = latestByType.action_item_list;
   const hasRetainedMeetingData = !sessionEnabled && !!meetingId && (
     segments.length > 0 ||
     notes.length > 0 ||
@@ -500,18 +308,6 @@ export default function App() {
     const timer = window.setTimeout(() => setBookmarkFeedback(null), 2200);
     return () => window.clearTimeout(timer);
   }, [bookmarkFeedback]);
-
-  useEffect(() => {
-    if (!refreshingSummary) {
-      return;
-    }
-    const latest = latestByType[refreshingSummary];
-    if (!latest || latest.id === refreshBaselineId) {
-      return;
-    }
-    setRefreshingSummary((current) => current === refreshingSummary ? null : current);
-    setRefreshBaselineId(null);
-  }, [latestByType, refreshBaselineId, refreshingSummary]);
 
   const visibleSegments = useMemo(() => segments.slice(-200), [segments, uiLanguage]);
   const visibleBookmarks = useMemo(() => {
@@ -551,8 +347,6 @@ export default function App() {
 
     return items;
   }, [notes, visibleBookmarks, visibleSegments, uiLanguage]);
-  const chapters = useMemo(() => chapterSnapshot ? parseSnapshotList(chapterSnapshot.content) : [], [chapterSnapshot, uiLanguage]);
-  const actionItems = useMemo(() => actionItemSnapshot ? parseSnapshotList(actionItemSnapshot.content) : [], [actionItemSnapshot, uiLanguage]);
   const latestSegment = segments.at(-1);
   const [newSegmentOrders, setNewSegmentOrders] = useState<Record<string, number>>({});
   const segmentAnimationKnownIdsRef = useRef<Set<string>>(new Set());
@@ -663,7 +457,7 @@ export default function App() {
   const resourceGovernorPolicy = sessionStats?.resource_governor_policy ?? "balanced";
   const resourceGovernorReason = sessionStats?.resource_governor_reason ?? null;
   const resourceGovernorSkips = sessionStats?.resource_governor_skips ?? 0;
-  const activeRuntimeProfile = sessionStats?.runtime_profile ?? runtimeProfile;
+  const activeRuntimeProfile = sessionEnabled ? sessionStats?.runtime_profile ?? runtimeProfile : runtimeProfile;
   const summaryOnlyMode = activeRuntimeProfile === "summary_only";
   const activeHardwareProfile = sessionStats?.hardware_profile ?? "auto";
   const activeHardwareSummary = sessionStats?.hardware_summary ?? t("detecting local CPU/GPU profile");
@@ -684,7 +478,7 @@ export default function App() {
   const gpuChipTitle = computeGpuActive
     ? computeActivityLabel
     : computeGpuConfigured
-      ? t("GPU is configured for MeetingBro and waiting for Whisper work")
+      ? t("GPU is configured for MeetingBro and waiting for Qwen3 work")
       : computeGpuAvailable
         ? t("GPU is available, but MeetingBro is currently configured to use CPU")
         : t("GPU is not available to the current Python ASR runtime");
@@ -800,7 +594,7 @@ export default function App() {
         severity: "warn",
         title: t("ASR is currently busy"),
         detail: lastError ?? t("The backend is still processing the current audio window."),
-        action: t("Use Summary Only mode, switch to a smaller Whisper model, or turn subtitles off if lag continues."),
+        action: t("Use Summary Only mode, switch to a smaller Qwen3 model, or turn subtitles off if lag continues."),
       });
     } else if (asrSafeguardActive || rtf >= 1.0 || backpressureAgeSeconds != null) {
       advice.push({
@@ -809,7 +603,7 @@ export default function App() {
         detail: asrSafeguardActive
           ? (sessionStats?.asr_safeguard_reason ?? t("The backend activated realtime protection."))
           : t("Last ASR realtime factor is {0}.", formatRtf(asrRealtimeFactor)),
-        action: t("Use Summary Only mode, switch to a smaller Whisper model, or turn subtitles off if lag continues."),
+        action: t("Use Summary Only mode, switch to a smaller Qwen3 model, or turn subtitles off if lag continues."),
       });
     } else if (realtimeGap >= 4.0 && activeRuntimeProfile !== "summary_only") {
       advice.push({
@@ -861,7 +655,7 @@ export default function App() {
         severity: audioInputBacklogSeconds >= 5.0 || audioInputQueueDropTotal > 0 ? "warn" : "ok",
         title: t("Audio input is buffered"),
         detail: t("Backlog {0}, queue drops {1}.", formatLagSeconds(audioInputBacklogSeconds), audioInputQueueDropTotal),
-        action: t("Use Summary Only mode or a smaller Whisper model until backlog stays near 0s."),
+        action: t("Use Summary Only mode or a smaller Qwen3 model until backlog stays near 0s."),
       });
     }
 
@@ -930,7 +724,7 @@ export default function App() {
       ? "warn"
       : "ok";
 
-  const transcriptBodyRef = useRef<HTMLDivElement>(null);
+  const transcriptBodyRef = useRef<HTMLDivElement | null>(null);
   const transcriptBottomRef = useRef<HTMLDivElement>(null);
   const transcriptAutoFollowRef = useRef(true);
   const transcriptProgrammaticScrollRef = useRef(false);
@@ -1000,21 +794,6 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [computeCpuActive, computeGpuActive]);
 
-  const notesBodyRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (notesBodyRef.current) {
-      notesBodyRef.current.scrollTop = notesBodyRef.current.scrollHeight;
-    }
-  }, [notes]);
-
-  const handleSaveToNotes = async (snapshot: SummarySnapshot) => {
-    await saveNote({
-      content: snapshot.content,
-      source_type: snapshot.summary_type,
-      source_id: snapshot.id,
-    });
-  };
-
   const currentExportInput = (): ExportMeetingInput => ({
     source: activeSource,
     runtime_profile: activeRuntimeProfile,
@@ -1035,6 +814,8 @@ export default function App() {
         setLastExport(result);
         setActionFeedback(`Export ready in ${result.export_dir}`);
       }
+    } catch (error) {
+      setActionFeedback(t("Export failed: {0}", (error as Error).message));
     } finally {
       setExporting(false);
       setExportIntent(null);
@@ -1056,13 +837,13 @@ export default function App() {
     setRuntimeProfile(value);
     if (value === "summary_only") {
       setSubtitleLanguage("off");
-      setActiveTab("summary");
     }
   };
 
   const handleSaveVocabulary = () => {
     window.localStorage.setItem(VOCABULARY_STORAGE_KEY, vocabulary);
     applyVocabulary(vocabulary);
+    setActionFeedback(t("Terms saved"));
   };
 
   const handleStartSession = () => {
@@ -1106,6 +887,8 @@ export default function App() {
       setActionFeedback(`Saved to ${result.export_dir}. Starting a new meeting…`);
       setRestartPromptOpen(false);
       setSessionEnabled(true);
+    } catch (error) {
+      setActionFeedback(t("Export failed: {0}", (error as Error).message));
     } finally {
       setExporting(false);
       setExportIntent(null);
@@ -1113,10 +896,9 @@ export default function App() {
   };
 
   const handleBookmark = async () => {
-    const label = window.prompt(t("Bookmark label (optional)"), "");
-    if (label === null) {
-      return;
-    }
+    const label = bookmarkLabel;
+    if (!connected || state !== "running") return;
+    setBookmarkLabel("");
     await saveBookmark(label);
     setBookmarkFeedback(
       label.trim()
@@ -1124,21 +906,10 @@ export default function App() {
         : `Bookmark saved at ${formatElapsedSeconds(audioClockSeconds ?? elapsedSeconds)}`,
     );
   };
-  const handleRefreshSummary = (summaryType: "rolling_summary" | "cumulative_meeting_summary" | "refined_transcript") => {
-    setRefreshBaselineId(latestByType[summaryType]?.id ?? null);
-    setRefreshingSummary(summaryType);
-    requestSummary(summaryType);
-  };
+
   const vocabularyHint = sessionEnabled
     ? t("Add keywords for better recognition. Save anytime, even during a meeting.")
     : t("Add keywords for better recognition. Save anytime before or during a meeting.");
-  const vocabularyTermCount = useMemo(() => {
-    return vocabulary
-      .split(/[\n,，;；]+/)
-      .map((term) => term.trim())
-      .filter(Boolean).length;
-  }, [vocabulary, uiLanguage]);
-
   const transcriptEmptyMessage = !sessionEnabled
     ? t("session stopped — press Start to begin capture")
     : state === "starting"
@@ -1151,71 +922,57 @@ export default function App() {
           ? t("listening to microphone — speak to start the transcript")
           : t("listening to system audio + microphone — speak or play meeting audio to start the transcript");
 
-  return (
-    <div className="app">
-      {!backend.isReady && (
-        <BackendGate
-          state={backend.state}
-          detail={backend.detail}
-          logTail={backend.logTail}
-          onRetry={backend.retry}
-          onOpenLog={backend.openLog}
-        />
-      )}
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} sessionActive={sessionEnabled} />
-      <HistoryModal open={historyOpen} onClose={() => setHistoryOpen(false)} currentMeetingId={meetingId} />
-      <header className="app-header">
-        <div className="brand-block">
-          <div className="brand-row">
-            <strong>MeetingBro</strong>
-            <span className={`session-state state-${state}`}>{!sessionEnabled && backend.isReady ? "ready" : state}</span>
-            {meetingId && <span className="meeting-id-pill">#{meetingId.slice(0, 8)}</span>}
-            <span className={`compute-chip ${displayCpuActive ? "active" : computeCpuConfigured ? "configured" : computeCpuAvailable ? "available" : "idle"}`} title={cpuChipTitle}>
-              <span className="compute-dot" aria-hidden="true" /> CPU
-            </span>
-            <span className={`compute-chip ${displayGpuActive ? "active" : computeGpuConfigured ? "configured" : computeGpuAvailable ? "available" : "idle"}`} title={gpuChipTitle}>
-              <span className="compute-dot" aria-hidden="true" /> GPU
-            </span>
-          </div>
-          <span className="app-tagline">{t("Live captions ? AI notes ? clean meeting record")}</span>
-        </div>
-        <div className="header-controls" aria-label={t("Meeting controls")}>
-          <label className="control-pill">
+  const openSettings = (tab: typeof settingsTab = "recording") => {
+    setSettingsTab(tab);
+    setSettingsOpen(true);
+  };
+  const bindTranscriptBody = useCallback((element: HTMLDivElement | null) => {
+    transcriptBodyRef.current = element;
+    if (element && transcriptAutoFollowRef.current) element.scrollTop = element.scrollHeight;
+  }, []);
+  const recordingControls = <div className="recording-preferences">
+    <section className="settings-section">
+      <h3>{t("Recording and languages")}</h3>
+          <label className="settings-field">
             <span>{t("Interface")}</span>
             <select aria-label={t("UI language")} value={uiLanguage} onChange={(e) => setUiLanguage(e.target.value === "en" ? "en" : "zh-Hant")}>
               <option value="zh-Hant">繁體中文</option>
               <option value="en">English</option>
             </select>
           </label>
-          <div className="settings-controls" aria-label={t("Capture and language settings")}>
-            <label className="control-pill">
-              <span>{t("Capture")}</span>
-              <select value={source} onChange={(e) => setSource(e.target.value)}>
+
+            <label className="settings-field">
+              <span>{t("Capture")} <InputLevelPreview source={source} micDevice={audioDevice} speakerName={loopbackDevice} active={sessionEnabled} running={state === "running"} level={audioLevel} /></span>
+              <select aria-label={t("Capture")} value={source} onChange={(e) => setSource(e.target.value)}>
                 <option value="mic">{t("Mic")}</option>
                 <option value="loopback">{t("System audio")}</option>
                 <option value="mixed">{t("System + Mic")}</option>
                 <option value="sample">{t("Sample audio (demo)")}</option>
               </select>
             </label>
-            {(source === "mic" || source === "mixed") && audioDevices && audioDevices.mics.length > 0 && (
-              <label className="control-pill">
+            {(source === "mic" || source === "mixed") && (
+              <label className="settings-field">
                 <span>{t("Mic device")}</span>
                 <select value={audioDevice} onChange={(e) => setAudioDevice(e.target.value)}>
                   <option value="">{t("Default")}</option>
-                  {audioDevices.mics.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  {audioDevice && !audioDevices?.mics.some(device => device.id === audioDevice) && <option value={audioDevice}>{t("Unavailable device ({0})", audioDevice)}</option>}
+                  {audioDevices?.mics.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
                 </select>
               </label>
             )}
-            {(source === "loopback" || source === "system") && audioDevices && audioDevices.loopbacks.length > 0 && (
-              <label className="control-pill">
+            {(source === "loopback" || source === "system" || source === "mixed") && (
+              <label className="settings-field">
                 <span>{t("Output device")}</span>
                 <select value={loopbackDevice} onChange={(e) => setLoopbackDevice(e.target.value)}>
                   <option value="">{t("Default")}</option>
-                  {audioDevices.loopbacks.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  {loopbackDevice && !audioDevices?.loopbacks.some(device => device.id === loopbackDevice) && <option value={loopbackDevice}>{t("Unavailable device ({0})", loopbackDevice)}</option>}
+                  {audioDevices?.loopbacks.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
                 </select>
               </label>
             )}
-            <label className="control-pill">
+            <button type="button" className="settings-btn" onClick={() => void refreshAudioDevices()}>{t("Refresh audio devices")}</button>
+            {audioDeviceError && <p className="settings-hint" role="status">{t("Could not load audio devices.")}</p>}
+            <label className="settings-field">
               <span>{t("Mode")}</span>
               <select value={runtimeProfile} onChange={(e) => handleRuntimeProfileChange(e.target.value)}>
                 <option value="balanced">{t("Balanced")}</option>
@@ -1223,8 +980,8 @@ export default function App() {
                 <option value="summary_only">{t("Summary only")}</option>
               </select>
             </label>
-            <label className="control-pill">
-              <span>{t("Speech")}</span>
+            <label className="settings-field">
+              <span>{t("Transcription language")}</span>
               <select value={speechLanguage} onChange={(e) => setSpeechLanguage(e.target.value)}>
                 <option value="auto">{t("Auto")}</option>
                 <option value="en">{t("English")}</option>
@@ -1232,16 +989,16 @@ export default function App() {
                 <option value="de">{t("Deutsch")}</option>
               </select>
             </label>
-            <label className="control-pill">
-              <span>{t("Notes")}</span>
+            <label className="settings-field">
+              <span>{t("Summary language")}</span>
               <select value={summaryLanguage} onChange={(e) => setSummaryLanguage(e.target.value)}>
                 <option value="en">{t("English")}</option>
                 <option value="zh">{t("Traditional Chinese")}</option>
                 <option value="de">{t("Deutsch")}</option>
               </select>
             </label>
-            <label className="control-pill">
-              <span>{t("Captions")}</span>
+            <label className="settings-field">
+              <span>{t("Translation language")}</span>
               <select value={summaryOnlyMode ? "off" : subtitleLanguage} onChange={(e) => setSubtitleLanguage(e.target.value)} disabled={summaryOnlyMode}>
                 <option value="off">{t("Off")}</option>
                 <option value="en">{t("English")}</option>
@@ -1249,530 +1006,33 @@ export default function App() {
                 <option value="de">{t("Deutsch")}</option>
               </select>
             </label>
-            <button type="button" className="settings-gear" onClick={() => setHistoryOpen(true)} title={t("Meeting history")} aria-label={t("Meeting history")}>
-              🕘
-            </button>
-            <button type="button" className="settings-gear" onClick={() => setSettingsOpen(true)} title={t("Settings")} aria-label={t("Settings")}>
-              ⚙
-            </button>
-          </div>
-          <div className="session-controls" aria-label={t("Session actions")}>
-            {!sessionEnabled ? (
-              <>
-                <button
-                  className="sample-btn"
-                  onClick={handleTrySample}
-                  disabled={!backend.isReady}
-                  title={t("Replay a bundled demo clip — no microphone or meeting needed")}
-                >
-                  {t("▶ Try sample")}</button>
-                <button className="start-btn" onClick={handleStartSession} disabled={!backend.isReady}>{t("Start")}</button>
-              </>
-            ) : (
-              <>
-                {state === "paused" ? (
-                  <button className="resume-btn" onClick={resumeSession}>{t("Resume")}</button>
-                ) : (
-                  <button className="pause-btn" onClick={pauseSession} disabled={state !== "running"}>
-                    {t("Pause")}</button>
-                )}
-                <button
-                  className="stop-btn"
-                  onClick={() => {
-                    stopSession();
-                    setSessionEnabled(false);
-                  }}
-                >
-                  {t("Stop")}</button>
-              </>
-            )}
-            <span className={`connection-pill ${connected ? "connected" : "disconnected"}`}>
-              <span className={connected ? "dot ok" : "dot bad"} />
-              {connected ? t("Online") : !sessionEnabled && backend.isReady ? t("Ready") : t("Offline")}
-            </span>
-          </div>
-        </div>
-      </header>
-
-      {lastError && !isSystemHealthOnlyMessage(lastError) && (
-        lastErrorCode === "llm_unavailable" || lastErrorCode === "translation_unavailable" ? (
-          <div className="error error--actionable">
-            <span>{lastError}</span>
-            <button type="button" className="settings-btn" onClick={() => setSettingsOpen(true)}>{t("Open Settings")}</button>
-          </div>
-        ) : (
-          <div className="error">{lastError}</div>
-        )
-      )}
-
-      <section className={`startup-settings vocabulary-dock${vocabularyOpen ? " open" : ""}`} aria-label={t("Names and terms settings")}>
-        <button
-          type="button"
-          className="vocabulary-toggle"
-          aria-expanded={vocabularyOpen}
-          onClick={() => setVocabularyOpen((open) => !open)}
-        >
-          <span className="vocabulary-toggle-main">
-            <strong>{t("Names & Terms")}</strong>
-            <span className="vocabulary-toggle-note">{t("Improve recognition for names, acronyms, and project terms")}</span>
-          </span>
-          <span className="vocabulary-count">
-            {vocabularyTermCount === 0 ? t("No terms") : `${vocabularyTermCount} ${vocabularyTermCount === 1 ? "term" : "terms"}`}
-          </span>
-          <span className={`toggle-caret${vocabularyOpen ? " open" : ""}`} aria-hidden="true">▼</span>
-        </button>
-        {vocabularyOpen && (
-          <div className="startup-settings-panel">
-            <p className="muted">{vocabularyHint}</p>
-            <div className="startup-settings-controls">
-              <textarea
-                value={vocabulary}
-                onChange={(e) => setVocabulary(e.target.value)}
-                placeholder="Anthropic, MeetingBro, Libin Mao, faster-whisper, pyannote"
-                rows={2}
-                aria-label={t("Names, acronyms, or project terms")}
-              />
-              <button type="button" className="secondary-action-btn" onClick={handleSaveVocabulary}>{t("Save Terms")}</button>
-            </div>
-          </div>
-        )}
-      </section>
-
-      <main className="grid">
-        {summaryOnlyMode ? (
-          <section className="panel transcript summary-only-panel">
-            <header>
-              <div>
-                <h2>
-                  {t("Summary Only")}{state === "running" && <span className="live-dot" aria-label="recording" />}
-                </h2>
-                <p className="subtitle">{t("capturing in background · no live captions")}</p>
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <button type="button" className="secondary-action-btn" onClick={handleBookmark} disabled={!connected || state !== "running"}>
-                  {t("Bookmark")}</button>
-                <div className="range">{segments.length} {" "}{t("segments")}</div>
-              </div>
-            </header>
-            <div className="panel-body summary-only-body">
-              <div className="summary-only-banner">
-                <strong>{t("Realtime captions are intentionally hidden in this mode.")}</strong>
-                <p>
-                  {t("MeetingBro is still listening and collecting transcript segments, then updating Summary, Clean Notes, and Board on their own cadence.")}</p>
-              </div>
-              <div className="summary-only-stats">
-                <div className="summary-only-stat">
-                  <span>{t("Captured")}</span>
-                  <strong>{segments.length} {" "}{t("segments")}</strong>
-                </div>
-                <div className="summary-only-stat">
-                  <span>{t("Elapsed")}</span>
-                  <strong>{formatElapsedSeconds(audioClockSeconds ?? elapsedSeconds)}</strong>
-                </div>
-                <div className="summary-only-stat">
-                  <span>{t("Latest summary")}</span>
-                  <strong>{rolling?.created_at ? formatCreatedAt(rolling.created_at) : "waiting"}</strong>
-                </div>
-              </div>
-              <p className="muted summary-only-tip">
-                {t("Tip: use the Refresh button in Summary or Clean Notes if you want an immediate update.")}</p>
-            </div>
-          </section>
-        ) : <section className="panel transcript">
-          <header>
-            <div>
-              <h2>
-                {t("Live Captions")}{state === "running" && <span className="live-dot" aria-label="recording" />}
-              </h2>
-              <p className="subtitle">{t("confirmed · timestamped")}</p>
-              <p className="transcript-lag-meta">
-                <span className={`delay-pill delay-${delayTone}`}>{formatLagSeconds(transcriptLagSeconds)} {" "}{t("behind")}</span>
-                {committedLagSeconds != null ? ` · commit ${formatLagSeconds(committedLagSeconds)}` : ""}
-                {previewSegment ? t(" · previewing") : ""}
-              </p>
-              {bookmarkFeedback && <p className="bookmark-feedback">{t(bookmarkFeedback)}</p>}
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <button type="button" className="secondary-action-btn" onClick={handleBookmark} disabled={!connected || state !== "running"}>
-                {t("Bookmark")}</button>
-              <div className="range">{segments.length} {" "}{t("segments")}</div>
-            </div>
-          </header>
-          <div
-            ref={transcriptBodyRef}
-            className="panel-body transcript-body"
-            onScroll={(e) => {
-              if (transcriptProgrammaticScrollRef.current) {
-                return;
-              }
-              const follow = isNearBottom(e.currentTarget);
-              transcriptAutoFollowRef.current = follow;
-              setTranscriptAutoFollow(follow);
-            }}
-          >
-            {visibleSegments.length === 0 && (
-              <div className="muted">{transcriptEmptyMessage}</div>
-            )}
-            {transcriptTimelineItems.map((item) => {
-              if (item.type === "bookmark") {
-                return (
-                  <div key={item.note.id} className="segment bookmark-marker">
-                    <span className="ts">{t("bookmark ·")}{" "}{formatElapsedSeconds(item.note.time_seconds)}</span>
-                    <div className="segment-text">
-                      <span>{item.note.content.trim() || t("Important moment")}</span>
-                    </div>
-                  </div>
-                );
-              }
-
-              const s = item.segment;
-              const confidenceTone = getConfidenceTone(s.confidence);
-              const confidenceLabel = getConfidenceLabel(s.confidence);
-              const qualityStyle: CSSProperties | undefined = s.quality === "low"
-                ? { opacity: 0.55, fontStyle: "italic" }
-                : s.quality === "uncertain"
-                  ? { opacity: 0.7 }
-                  : undefined;
-              const subtitleText = activeSubtitleLanguage ? s.translations[activeSubtitleLanguage] : null;
-              const showSubtitlePlaceholder =
-                activeSubtitleLanguage != null &&
-                s.original_language !== activeSubtitleLanguage &&
-                !(subtitleText && subtitleText.trim());
-              const segmentOrder = newSegmentOrders[s.id];
-              const isNewSegment = segmentOrder !== undefined;
-              const segmentDelayMs = isNewSegment ? segmentOrder * FORMAL_SEGMENT_STAGGER_MS : 0;
-              const segmentStyle: StaggerStyle | undefined = isNewSegment
-                ? {
-                  ...qualityStyle,
-                  "--segment-delay": `${segmentDelayMs}ms`,
-                  "--segment-text-delay": `${segmentDelayMs + FORMAL_CELL_STAGGER_MS}ms`,
-                }
-                : qualityStyle;
-              const segmentClassName = [
-                "segment",
-                isNewSegment ? "segment-new" : "",
-                isNewSegment && hasPreviewHandoff(s, handoffPreviewSegments) ? "segment-promoted" : "",
-                confidenceTone !== "stable" ? `segment-${confidenceTone}` : "",
-              ].filter(Boolean).join(" ");
-              return (
-                <div key={s.id} className={segmentClassName} style={segmentStyle}>
-                  <span className="ts">
-                    {formatCreatedAt(s.created_at)}
-                    {confidenceLabel && <em className={`confidence-flag confidence-${confidenceTone}`}>{confidenceLabel}</em>}
-                  </span>
-                  <div className="segment-text">
-                    <span>{s.text}</span>
-                    {subtitleText && subtitleText.trim() && subtitleText.trim() !== s.text.trim() && (
-                      <span className="segment-subtitle">{subtitleText}</span>
-                    )}
-                    {showSubtitlePlaceholder && (
-                      <span className="segment-subtitle segment-subtitle-pending" aria-label={t("translating subtitle")}>
-                        <span className="subtitle-loading-dot" />
-                        <span className="subtitle-loading-dot" />
-                        <span className="subtitle-loading-dot" />
-                      </span>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-            {shouldShowPreviewStack && (
-              <div className="preview-stack" aria-live="polite" aria-label={t("Live preview transcript")}>
-                {departingPreviewSegments.map((segment, index) => {
-                  const previewDelayMs = index * PREVIEW_ROW_STAGGER_MS;
-                  const previewStyle: StaggerStyle = {
-                    "--preview-status-delay": `${previewDelayMs}ms`,
-                    "--preview-text-delay": `${previewDelayMs + PREVIEW_CELL_STAGGER_MS}ms`,
-                  };
-                  return (
-                  <div key={`leaving-${segment.id}`} className="segment preview-segment preview-age-0 preview-leaving" style={previewStyle} aria-hidden="true">
-                    <span className="preview-status">
-                      <span className="preview-hearing">
-                        <span className="preview-pulse-dot" aria-hidden="true" />
-                        {t("Listening")}</span>
-                    </span>
-                    <span className="preview-segment-text">{segment.text}</span>
-                  </div>
-                  );
-                })}
-                {previewSegments.length > 0 && previewSegments.map((segment, index) => {
-                  const isNewest = index === previewSegments.length - 1;
-                  const age = previewSegments.length - index - 1;
-                  const displayText = isNewest
-                    ? previewDisplayText ?? (previewIsStreaming ? "" : segment.text)
-                    : segment.text;
-                  const showCursor = isNewest && !previewIsStreaming && previewDisplayText !== null;
-                  const previewDelayMs = (departingPreviewSegments.length + index) * PREVIEW_ROW_STAGGER_MS;
-                  const previewStyle: StaggerStyle = {
-                    "--preview-status-delay": `${previewDelayMs}ms`,
-                    "--preview-text-delay": `${previewDelayMs + PREVIEW_CELL_STAGGER_MS}ms`,
-                  };
-                  return (
-                    <div key={segment.id} className={`segment preview-segment preview-age-${Math.min(age, 4)}`} style={previewStyle}>
-                      <span className="preview-status">
-                        <span className="preview-hearing">
-                          <span className="preview-pulse-dot" aria-hidden="true" />
-                          {t("Listening")}</span>
-                        {isExperimentalPreview && (
-                          <span
-                            className="preview-experimental-badge"
-                            title={t("Qwen3 fast preview · text is live and may still change")}
-                          >
-                            {t("Qwen · Live")}</span>
-                        )}
-                      </span>
-                      <span className="preview-segment-text">
-                        {displayText}
-                        {showCursor && <span className="preview-cursor" aria-hidden="true" />}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-            <div ref={transcriptBottomRef} className="transcript-bottom-anchor" />
-            {!transcriptAutoFollow && (
-              <button
-                type="button"
-                className="jump-latest-btn"
-                onClick={() => {
-                  transcriptAutoFollowRef.current = true;
-                  setTranscriptAutoFollow(true);
-                  scrollTranscriptToBottom("smooth");
-                }}
-              >
-                {t("Jump to latest")}</button>
-            )}
-          </div>
-        </section>}
-
-        <section className="panel workspace">
-          <div className="workspace-tabs" role="tablist">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === "summary"}
-              className={`workspace-tab-btn${activeTab === "summary" ? " active" : ""}`}
-              onClick={() => setActiveTab("summary")}
-            >
-              {t("Summary")}</button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === "clean"}
-              className={`workspace-tab-btn${activeTab === "clean" ? " active" : ""}`}
-              onClick={() => setActiveTab("clean")}
-            >
-              {t("Clean Notes")}</button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === "board"}
-              className={`workspace-tab-btn${activeTab === "board" ? " active" : ""}`}
-              onClick={() => setActiveTab("board")}
-            >
-              {t("Board")}</button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === "report"}
-              className={`workspace-tab-btn${activeTab === "report" ? " active" : ""}`}
-              onClick={() => setActiveTab("report")}
-            >{t("Interactive report")}</button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === "notes"}
-              className={`workspace-tab-btn${activeTab === "notes" ? " active" : ""}`}
-              onClick={() => setActiveTab("notes")}
-            >
-              {t("Notes")}</button>
-          </div>
-          <div className="workspace-content">
-            {(sessionStats?.summary_pending_count ?? 0) > 0 && sessionStats?.inference_defer_reason && <p role="status" className="settings-hint">{t("Summary waiting: {0}", t(sessionStats.inference_defer_reason))}</p>}
-            {finalJob && <p role="status" className="settings-hint">{t("Final summary: {0}", t(finalJob.status))}{finalJob.error && ` · ${finalJob.error}`}{finalJob.status === "failed" && ` · ${t("Retry from meeting history")}`}</p>}
-            {activeTab === "summary" && (
-              <SummaryPanel
-                compact
-                title={t("AI Summary")}
-                subtitle={t("rolling AI digest of the last 3–5 minutes")}
-                snapshot={latestByType.final_summary ?? rolling}
-                history={[
-                  ...(historyByType.rolling_summary ?? []),
-                  ...(historyByType.final_summary ?? []),
-                ]}
-                sessionStartedAt={sessionStartedAt}
-                accent="#2563eb"
-                onSaveToNotes={handleSaveToNotes}
-                onRefresh={() => handleRefreshSummary("rolling_summary")}
-                refreshDisabled={!connected || state !== "running" || segments.length === 0}
-                refreshBusy={refreshingSummary === "rolling_summary"}
-              />
-            )}
-            {activeTab === "clean" && (
-              <SummaryPanel
-                compact
-                title={t("AI Clean Notes")}
-                subtitle={t("polished conversation record · Whisper + Qwen + LLM")}
-                snapshot={refined}
-                history={historyByType.refined_transcript ?? []}
-                sessionStartedAt={sessionStartedAt}
-                accent="#7c3aed"
-                onSaveToNotes={handleSaveToNotes}
-                onRefresh={() => handleRefreshSummary("refined_transcript")}
-                refreshDisabled={!connected || state !== "running" || segments.length === 0}
-                refreshBusy={refreshingSummary === "refined_transcript"}
-              />
-            )}
-            {activeTab === "board" && (
-              <SummaryPanel
-                compact
-                title={t("Meeting Board")}
-                subtitle={t("live meeting state · decisions · actions · open questions")}
-                snapshot={cumulative}
-                history={historyByType.cumulative_meeting_summary ?? []}
-                sessionStartedAt={sessionStartedAt}
-                accent="#0f766e"
-                onSaveToNotes={handleSaveToNotes}
-                onRefresh={() => handleRefreshSummary("cumulative_meeting_summary")}
-                refreshDisabled={!connected || state !== "running" || segments.length === 0}
-                refreshBusy={refreshingSummary === "cumulative_meeting_summary"}
-              />
-            )}
-            {activeTab === "report" && <div className="workspace-tab-panel panel-body">
-              {liveReport ? <ReportView report={liveReport} transcript={segments} /> : <p>{t("The report will appear when a summary is ready.")}</p>}
-            </div>}
-            {activeTab === "notes" && (
-              <div className="workspace-tab-panel">
-                <div ref={notesBodyRef} className="panel-body">
-                  <div className="export-box">
-                    <div>
-                      <strong>{t("Export meeting files")}</strong>
-                      <p className="muted">{t("Creates transcript.md, summary.md, and metadata.json in the chosen folder.")}</p>
-                      <div className="export-target-row">
-                        <input
-                          type="text"
-                          value={exportRoot}
-                          onChange={(e) => setExportRoot(e.target.value)}
-                          placeholder={t("Default: project exports/<timestamp> folder")}
-                          aria-label={t("Export folder")}
-                        />
-                        {window.meetingbro?.selectExportDirectory && (
-                          <button type="button" className="secondary-export-btn" onClick={handleChooseExportFolder} disabled={exporting}>
-                            {t("Browse…")}</button>
-                        )}
-                      </div>
-                      <label style={{ display: "inline-flex", alignItems: "center", gap: 8, marginTop: 10, fontSize: 12 }}>
-                        <input
-                          type="checkbox"
-                          checked={bilingualExport}
-                          onChange={(e) => setBilingualExport(e.target.checked)}
-                        />
-                        {t("Bilingual transcript (original + translation)")}</label>
-                      {lastExport && (
-                        <p className="export-path">
-                          {t("Latest export:")}<code>{lastExport.export_dir}</code>
-                        </p>
-                      )}
-                      {(exporting || actionFeedback) && exportIntent !== "restart" && (
-                        <p className={`action-feedback ${exporting ? "is-busy" : "is-success"}`}>
-                          {exporting ? t("Preparing transcript, summary, and metadata…") : (actionFeedback ? t(actionFeedback) : null)}
-                        </p>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      className={`primary-export-btn ${exporting && exportIntent === "manual" ? "button-busy" : ""}`.trim()}
-                      onClick={handleExportMeeting}
-                      disabled={!meetingId || exporting}
-                      aria-busy={exporting && exportIntent === "manual"}
-                    >
-                      {exporting ? t("Exporting…") : t("Export Meeting")}
-                    </button>
-                  </div>
-                  {chapterSnapshot && (
-                    <div>
-                      <strong>{t("Chapters")}</strong>
-                      {chapters.length === 0 ? (
-                        <p className="muted">{t("No chapters extracted.")}</p>
-                      ) : (
-                        <ul className="notes-list">
-                          {chapters.map((chapter, index) => (
-                            <li key={`chapter-${index}`}>
-                              <div className="note-meta">
-                                <span>{formatRange(Number(chapter.time_start ?? 0), Number(chapter.time_end ?? 0))}</span>
-                                <span>{String(chapter.title ?? t("Untitled chapter"))}</span>
-                              </div>
-                              <div>{String(chapter.summary ?? "")}</div>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-                  )}
-                  {actionItemSnapshot && (
-                    <div>
-                      <strong>{t("Action Items")}</strong>
-                      {actionItems.length === 0 ? (
-                        <p className="muted">{t("No action items extracted.")}</p>
-                      ) : (
-                        <ul className="notes-list">
-                          {actionItems.map((item, index) => (
-                            <li key={`action-${index}`}>
-                              <div>{String(item.text ?? "")}</div>
-                              <div className="note-meta">
-                                <span>{item.assignee ? t("assignee: {0}", String(item.assignee)) : "unassigned"}</span>
-                                <span>{item.due ? t("due: {0}", String(item.due)) : t("no due date")}</span>
-                              </div>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-                  )}
-                  {notes.length === 0 ? (
-                    <p className="muted">{t("No saved notes yet. Use \"Save to notes\" on a summary panel.")}</p>
-                  ) : (
-                    <ul className="notes-list">
-                      {notes.map((n) => (
-                        <li key={n.id}>
-                          <div className="note-meta">
-                            <span>{n.source_type ?? "note"}</span>
-                            <span className="muted">
-                              {new Date(n.created_at).toLocaleTimeString()}
-                            </span>
-                          </div>
-                          <div>{n.content}</div>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-        </section>
-      </main>
-
-      <div className="diagnostics-section">
-        <button
-          type="button"
-          className="diagnostics-toggle"
-          onClick={() => setDiagnosticsOpen((o) => !o)}
-          aria-expanded={diagnosticsOpen}
-          aria-controls="diagnostics-drawer"
-        >
-          <span className="diagnostics-toggle-label">{t("System Health")}</span>
-          <span className={`health-badge health-${systemAdviceTone}`}>
-            {systemAdviceTone === "ok" ? t("Healthy") : systemAdviceTone === "warn" ? t("Check needed") : t("Alert")}
-          </span>
-          {elapsedSeconds > 0 && (
-            <span className="diagnostics-toggle-elapsed">{formatElapsedSeconds(elapsedSeconds)}</span>
-          )}
-          <span className={`toggle-caret${diagnosticsOpen ? " open" : ""}`} aria-hidden="true">▼</span>
-        </button>
-        {diagnosticsOpen && (
-          <div id="diagnostics-drawer" className="diagnostics-drawer">
+    </section>
+    <section className="settings-section">
+      <h3>{t("Names & Terms")}</h3><p className="settings-hint">{vocabularyHint}</p>
+      <label className="settings-field"><span>{t("Names, acronyms, or project terms")}</span>
+        <textarea value={vocabulary} onChange={e => setVocabulary(e.target.value)} rows={3} placeholder="MeetingBro, Qwen3" />
+      </label>
+      <button type="button" onClick={handleSaveVocabulary}>{t("Save Terms")}</button>
+    </section>
+    <section className="settings-section">
+      <h3>{t("Export meeting files")}</h3>
+      <label className="settings-field"><span>{t("Export folder")}</span>
+        <input value={exportRoot} onChange={e => setExportRoot(e.target.value)} placeholder={t("Default: project exports/<timestamp> folder")} />
+      </label>
+      {window.meetingbro?.selectExportDirectory && <button type="button" onClick={handleChooseExportFolder}>{t("Browse…")}</button>}
+      <label className="settings-field"><span><input type="checkbox" checked={bilingualExport} onChange={e => setBilingualExport(e.target.checked)} /> {t("Bilingual transcript (original + translation)")}</span></label>
+      {lastExport && <p className="settings-hint">{t("Latest export:")} {lastExport.export_dir}</p>}
+    </section>
+    <section className="settings-section">
+      <button type="button" onClick={() => { setSettingsOpen(false); handleTrySample(); }} disabled={!backend.isReady || sessionEnabled}>{t("▶ Try sample")}</button>
+    </section>
+  </div>;
+  const diagnostics = <div className="recorder-diagnostics">
+    <div className="diagnostics-compute">
+      <span className={`health-badge health-${systemAdviceTone}`}>{t(systemAdviceTone === "ok" ? "Healthy" : "Check needed")}</span>
+      <span className={`compute-chip ${displayCpuActive ? "active" : "idle"}`} title={cpuChipTitle}>CPU</span>
+      <span className={`compute-chip ${displayGpuActive ? "active" : "idle"}`} title={gpuChipTitle}>GPU</span>
+    </div>
             <div className="diagnostics-body">
               <div className={`diagnostic-card advice-card advice-${systemAdviceTone}`}>
                 <span className="diagnostic-label">{t("System Advice")}</span>
@@ -1980,10 +1240,228 @@ export default function App() {
               </div>
               </>)}
             </div>
-          </div>
-        )}
-      </div>
+  </div>;
+  const liveTranscript = <div className="live-caption-sheet">
+    <form className="bookmark-form" onSubmit={e => { e.preventDefault(); void handleBookmark(); }}>
+      <input value={bookmarkLabel} onChange={e => setBookmarkLabel(e.target.value)} placeholder={t("Bookmark label (optional)")} aria-label={t("Bookmark label (optional)")} />
+      <button type="submit" disabled={!connected || state !== "running"}>{t("Bookmark")}</button>
+    </form>
+        {summaryOnlyMode ? (
+          <section className="panel transcript summary-only-panel">
+            <header>
+              <div>
+                <h2>
+                  {t("Summary Only")}{state === "running" && <span className="live-dot" aria-label="recording" />}
+                </h2>
+                <p className="subtitle">{t("capturing in background · no live captions")}</p>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div className="range">{segments.length} {" "}{t("segments")}</div>
+              </div>
+            </header>
+            <div className="panel-body summary-only-body">
+              <div className="summary-only-banner">
+                <strong>{t("Realtime captions are intentionally hidden in this mode.")}</strong>
+                <p>
+                  {t("MeetingBro is still listening and collecting transcript segments, then updating Summary, Clean Notes, and Board on their own cadence.")}</p>
+              </div>
+              <div className="summary-only-stats">
+                <div className="summary-only-stat">
+                  <span>{t("Captured")}</span>
+                  <strong>{segments.length} {" "}{t("segments")}</strong>
+                </div>
+                <div className="summary-only-stat">
+                  <span>{t("Elapsed")}</span>
+                  <strong>{formatElapsedSeconds(audioClockSeconds ?? elapsedSeconds)}</strong>
+                </div>
+                <div className="summary-only-stat">
+                  <span>{t("Latest summary")}</span>
+                  <strong>{rolling?.created_at ? formatCreatedAt(rolling.created_at) : "waiting"}</strong>
+                </div>
+              </div>
+              <p className="muted summary-only-tip">
+                {t("Tip: use the Refresh button in Summary or Clean Notes if you want an immediate update.")}</p>
+            </div>
+          </section>
+        ) : <section className="panel transcript">
+          <header>
+            <div>
+              <h2>
+                {t("Live Captions")}{state === "running" && <span className="live-dot" aria-label="recording" />}
+              </h2>
+              <p className="subtitle">{t("confirmed · timestamped")}</p>
+              <p className="transcript-lag-meta">
+                <span className={`delay-pill delay-${delayTone}`}>{formatLagSeconds(transcriptLagSeconds)} {" "}{t("behind")}</span>
+                {committedLagSeconds != null ? ` · commit ${formatLagSeconds(committedLagSeconds)}` : ""}
+                {previewSegment ? t(" · previewing") : ""}
+              </p>
+              {bookmarkFeedback && <p className="bookmark-feedback">{t(bookmarkFeedback)}</p>}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div className="range">{segments.length} {" "}{t("segments")}</div>
+            </div>
+          </header>
+          <div
+            ref={bindTranscriptBody}
+            className="panel-body transcript-body"
+            onScroll={(e) => {
+              if (transcriptProgrammaticScrollRef.current) {
+                return;
+              }
+              const follow = isNearBottom(e.currentTarget);
+              transcriptAutoFollowRef.current = follow;
+              setTranscriptAutoFollow(follow);
+            }}
+          >
+            {visibleSegments.length === 0 && (
+              <div className="muted">{transcriptEmptyMessage}</div>
+            )}
+            {transcriptTimelineItems.map((item) => {
+              if (item.type === "bookmark") {
+                return (
+                  <div key={item.note.id} className="segment bookmark-marker">
+                    <span className="ts">{t("bookmark ·")}{" "}{formatElapsedSeconds(item.note.time_seconds)}</span>
+                    <div className="segment-text">
+                      <span>{item.note.content.trim() || t("Important moment")}</span>
+                    </div>
+                  </div>
+                );
+              }
 
+              const s = item.segment;
+              const confidenceTone = getConfidenceTone(s.confidence);
+              const confidenceLabel = getConfidenceLabel(s.confidence);
+              const qualityStyle: CSSProperties | undefined = s.quality === "low"
+                ? { opacity: 0.55, fontStyle: "italic" }
+                : s.quality === "uncertain"
+                  ? { opacity: 0.7 }
+                  : undefined;
+              const subtitleText = activeSubtitleLanguage ? s.translations[activeSubtitleLanguage] : null;
+              const showSubtitlePlaceholder =
+                activeSubtitleLanguage != null &&
+                s.original_language !== activeSubtitleLanguage &&
+                !(subtitleText && subtitleText.trim());
+              const segmentOrder = newSegmentOrders[s.id];
+              const isNewSegment = segmentOrder !== undefined;
+              const segmentDelayMs = isNewSegment ? segmentOrder * FORMAL_SEGMENT_STAGGER_MS : 0;
+              const segmentStyle: StaggerStyle | undefined = isNewSegment
+                ? {
+                  ...qualityStyle,
+                  "--segment-delay": `${segmentDelayMs}ms`,
+                  "--segment-text-delay": `${segmentDelayMs + FORMAL_CELL_STAGGER_MS}ms`,
+                }
+                : qualityStyle;
+              const segmentClassName = [
+                "segment",
+                isNewSegment ? "segment-new" : "",
+                isNewSegment && hasPreviewHandoff(s, handoffPreviewSegments) ? "segment-promoted" : "",
+                confidenceTone !== "stable" ? `segment-${confidenceTone}` : "",
+              ].filter(Boolean).join(" ");
+              return (
+                <div key={s.id} className={segmentClassName} style={segmentStyle}>
+                  <span className="ts">
+                    {formatCreatedAt(s.created_at)}
+                    {confidenceLabel && <em className={`confidence-flag confidence-${confidenceTone}`}>{confidenceLabel}</em>}
+                  </span>
+                  <div className="segment-text">
+                    <span>{s.text}</span>
+                    {subtitleText && subtitleText.trim() && subtitleText.trim() !== s.text.trim() && (
+                      <span className="segment-subtitle">{subtitleText}</span>
+                    )}
+                    {showSubtitlePlaceholder && (
+                      <span className="segment-subtitle segment-subtitle-pending" aria-label={t("translating subtitle")}>
+                        <span className="subtitle-loading-dot" />
+                        <span className="subtitle-loading-dot" />
+                        <span className="subtitle-loading-dot" />
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            {shouldShowPreviewStack && (
+              <div className="preview-stack" aria-live="polite" aria-label={t("Live preview transcript")}>
+                {departingPreviewSegments.map((segment, index) => {
+                  const previewDelayMs = index * PREVIEW_ROW_STAGGER_MS;
+                  const previewStyle: StaggerStyle = {
+                    "--preview-status-delay": `${previewDelayMs}ms`,
+                    "--preview-text-delay": `${previewDelayMs + PREVIEW_CELL_STAGGER_MS}ms`,
+                  };
+                  return (
+                  <div key={`leaving-${segment.id}`} className="segment preview-segment preview-age-0 preview-leaving" style={previewStyle} aria-hidden="true">
+                    <span className="preview-status">
+                      <span className="preview-hearing">
+                        <span className="preview-pulse-dot" aria-hidden="true" />
+                        {t("Listening")}</span>
+                    </span>
+                    <span className="preview-segment-text">{segment.text}</span>
+                  </div>
+                  );
+                })}
+                {previewSegments.length > 0 && previewSegments.map((segment, index) => {
+                  const isNewest = index === previewSegments.length - 1;
+                  const age = previewSegments.length - index - 1;
+                  const displayText = isNewest
+                    ? previewDisplayText ?? (previewIsStreaming ? "" : segment.text)
+                    : segment.text;
+                  const showCursor = isNewest && !previewIsStreaming && previewDisplayText !== null;
+                  const previewDelayMs = (departingPreviewSegments.length + index) * PREVIEW_ROW_STAGGER_MS;
+                  const previewStyle: StaggerStyle = {
+                    "--preview-status-delay": `${previewDelayMs}ms`,
+                    "--preview-text-delay": `${previewDelayMs + PREVIEW_CELL_STAGGER_MS}ms`,
+                  };
+                  return (
+                    <div key={segment.id} className={`segment preview-segment preview-age-${Math.min(age, 4)}`} style={previewStyle}>
+                      <span className="preview-status">
+                        <span className="preview-hearing">
+                          <span className="preview-pulse-dot" aria-hidden="true" />
+                          {t("Listening")}</span>
+                        {isExperimentalPreview && (
+                          <span
+                            className="preview-experimental-badge"
+                            title={t("Qwen3 fast preview · text is live and may still change")}
+                          >
+                            {t("Qwen · Live")}</span>
+                        )}
+                      </span>
+                      <span className="preview-segment-text">
+                        {displayText}
+                        {showCursor && <span className="preview-cursor" aria-hidden="true" />}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <div ref={transcriptBottomRef} className="transcript-bottom-anchor" />
+            {!transcriptAutoFollow && (
+              <button
+                type="button"
+                className="jump-latest-btn"
+                onClick={() => {
+                  transcriptAutoFollowRef.current = true;
+                  setTranscriptAutoFollow(true);
+                  scrollTranscriptToBottom("smooth");
+                }}
+              >
+                {t("Jump to latest")}</button>
+            )}
+          </div>
+        </section>}
+
+
+  </div>;
+  return <div className="app recorder-app">
+    {!backend.isReady && <BackendGate state={backend.state} detail={backend.detail} logTail={backend.logTail} onRetry={backend.retry} onOpenLog={backend.openLog} />}
+    <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} sessionActive={sessionEnabled} initialTab={settingsTab} recordingControls={recordingControls} diagnostics={diagnostics} />
+    <RecorderView ready={backend.isReady} active={sessionEnabled} state={state} meetingId={meetingId} elapsed={elapsedSeconds} audioLevel={audioLevel}
+      segments={segments} summary={latestByType.final_summary ?? cumulative ?? rolling} report={liveReport} finalJob={finalJob}
+      error={lastError} errorCode={lastErrorCode} feedback={actionFeedback ?? bookmarkFeedback}
+      summaryOnly={summaryOnlyMode} liveTranscript={liveTranscript}
+      liveExtras={null}
+      onStart={handleStartSession} onPause={pauseSession} onResume={resumeSession}
+      onStop={() => { stopSession(); setSessionEnabled(false); }}
+      onExport={handleExportMeeting} onSettings={() => openSettings()} onModelSettings={() => openSettings("models")} onDiagnostics={() => openSettings("diagnostics")} />
       {restartPromptOpen && (
         <div className="confirm-overlay" role="dialog" aria-modal="true" aria-labelledby="restart-dialog-title">
           <div className="confirm-dialog">
@@ -2009,6 +1487,5 @@ export default function App() {
           </div>
         </div>
       )}
-    </div>
-  );
+  </div>;
 }

@@ -18,15 +18,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .asr.base import ASRAdapter
-from .asr.factory import build_formal_asr
-from .asr.faster_whisper_adapter import FasterWhisperAdapter
+from .asr.factory import build_formal_asr, qwen_model_size
 from .audio import AudioSource, MicrophoneSource, MixedAudioSource, SystemAudioLoopbackSource, WavFileSource
 from .audio.devices import enumerate_audio_devices
 from .exporter import export_meeting
 from .hardware import HardwareProfile, detect_hardware_profile
 from .jobs.final_summary import FinalSummaryWorker
 from .llm.openai_compatible import OpenAICompatibleClient, OpenAICompatibleConfig, _load_dotenv_if_present, is_local_ollama_url
-from .reports.generator import generate_report
+from .reports.generator import ReportGenerationError, generate_report
 from .resources.coordinator import InferenceCoordinator
 from .schemas import (
     CreateNoteRequest,
@@ -273,64 +272,7 @@ def _configured_preview_runtime(
     *,
     formal_device: str,
 ) -> tuple[str, str]:
-    preview_backend = os.environ.get("MEETINGBRO_PREVIEW_ASR_BACKEND", "").strip().lower()
-    if preview_backend == "qwen3":
-        # Guard: the Qwen model is optional (~700 MB, not auto-downloaded). If it
-        # is missing, degrade to a shared (formal-model) preview instead of
-        # failing every preview decode — so enabling preview by default is safe.
-        model_dir = _resolve_qwen_model_dir()
-        if not model_dir.exists():
-            logger.warning(
-                "Qwen3 preview backend selected but model dir not found (%s); "
-                "using shared preview instead",
-                model_dir,
-            )
-            return "shared", formal_device
-        return (
-            "qwen3",
-            _env_str_auto(
-                "MEETINGBRO_PREVIEW_QWEN3_PROVIDER",
-                hardware.recommended_qwen_provider if hardware is not None else "cpu",
-            ),
-        )
-
-    if preview_backend == "shared":
-        return "shared", formal_device
-
-    if preview_backend == "whisper-streaming":
-        return "whisper-streaming", formal_device
-
-    # Auto-default: when no backend is explicitly set (or set to "auto"), prefer
-    # whisper-streaming if the Qwen model dir does not exist (Whisper-only majority).
-    # When the Qwen model dir exists, keep qwen3 as the default for performance users.
-    if not preview_backend or preview_backend == "auto":
-        model_dir = _resolve_qwen_model_dir()
-        if not model_dir.exists():
-            logger.info(
-                "auto preview backend: Qwen model dir not found (%s); defaulting to whisper-streaming",
-                model_dir,
-            )
-            return "whisper-streaming", formal_device
-        # Qwen model exists — keep qwen3 as default
-        return (
-            "qwen3",
-            _env_str_auto(
-                "MEETINGBRO_PREVIEW_QWEN3_PROVIDER",
-                hardware.recommended_qwen_provider if hardware is not None else "cpu",
-            ),
-        )
-
-    preview_size = os.environ.get("MEETINGBRO_PREVIEW_WHISPER_SIZE", "").strip()
-    if not preview_size or preview_size.lower() == "shared":
-        return "shared", formal_device
-
-    preview_default_device = "cpu"
-    if hardware is not None and hardware.recommended_whisper_device == "cuda":
-        preview_default_device = "cpu"
-    return (
-        "faster_whisper",
-        _env_str_auto("MEETINGBRO_PREVIEW_WHISPER_DEVICE", preview_default_device),
-    )
+    return "shared", formal_device
 
 
 def _should_load_preview_asr(
@@ -427,95 +369,9 @@ async def _ensure_preview_asr_loaded(app: FastAPI, *, profile_name: str) -> None
         )
 
 
-def _build_streaming_preview_adapter(formal_asr: ASRAdapter) -> "ASRAdapter":
-    """Build the whisper-streaming preview lane, sharing the formal model."""
-    from .asr.streaming_whisper_adapter import StreamingWhisperAdapter
-
-    return StreamingWhisperAdapter(formal_asr)
-
-
-def _build_preview_asr(hardware: HardwareProfile | None = None, formal_asr: Optional[ASRAdapter] = None) -> ASRAdapter | None:
-    backend = os.environ.get("MEETINGBRO_PREVIEW_ASR_BACKEND", "").strip().lower()
-
-    if backend == "whisper-streaming":
-        if formal_asr is None:
-            logger.warning(
-                "whisper-streaming preview backend requested but formal_asr not provided; "
-                "using shared preview instead"
-            )
-            return None
-        return _build_streaming_preview_adapter(formal_asr)
-
-    if backend == "qwen3":
-        # Lazy import so that a missing sherpa-onnx never affects normal startup.
-        from .asr.qwen3_asr_adapter import Qwen3ASRAdapter
-
-        # Resolve relative paths against the project root so the backend can
-        # be started from any working directory (env override or bundled default).
-        model_dir_path = _resolve_qwen_model_dir()
-        return Qwen3ASRAdapter(
-            model_dir=model_dir_path,
-            num_threads=_env_int(
-                "MEETINGBRO_PREVIEW_QWEN3_NUM_THREADS",
-                hardware.recommended_qwen_threads if hardware is not None else 2,
-            ),
-            provider=_env_str_auto(
-                "MEETINGBRO_PREVIEW_QWEN3_PROVIDER",
-                hardware.recommended_qwen_provider if hardware is not None else "cpu",
-            ),
-            max_total_len=_env_int("MEETINGBRO_PREVIEW_QWEN3_MAX_TOTAL_LEN", 256),
-            max_new_tokens=_env_int("MEETINGBRO_PREVIEW_QWEN3_MAX_NEW_TOKENS", 96),
-            filter_language_script=_env_bool(
-                "MEETINGBRO_PREVIEW_QWEN3_FILTER_LANGUAGE_SCRIPT", True
-            ),
-            suppress_fillers=_env_bool("MEETINGBRO_PREVIEW_QWEN3_SUPPRESS_FILLERS", True),
-        )
-
-    # Default: dedicated faster-whisper model, or None → fall back to shared model.
-    model_size = os.environ.get("MEETINGBRO_PREVIEW_WHISPER_SIZE", "").strip()
-    if not model_size or model_size.lower() == "shared":
-        return None
-    preview_default_device = "cpu"
-    if hardware is not None and hardware.recommended_whisper_device == "cuda":
-        preview_default_device = "cpu"
-    preview_device = _env_str_auto("MEETINGBRO_PREVIEW_WHISPER_DEVICE", preview_default_device)
-    preview_compute_default = "int8" if preview_device == "cpu" else (
-        hardware.recommended_whisper_compute_type if hardware is not None else "float16"
-    )
-
-    return FasterWhisperAdapter(
-        model_size=model_size,
-        device=preview_device,
-        compute_type=_env_str_auto("MEETINGBRO_PREVIEW_WHISPER_COMPUTE_TYPE", preview_compute_default),
-        beam_size=_env_int("MEETINGBRO_PREVIEW_WHISPER_BEAM_SIZE", 1),
-        cpu_threads=_env_int("MEETINGBRO_PREVIEW_WHISPER_CPU_THREADS", 0),
-        num_workers=_env_int("MEETINGBRO_PREVIEW_WHISPER_NUM_WORKERS", 1),
-        vad_threshold=_env_float(
-            "MEETINGBRO_PREVIEW_WHISPER_VAD_THRESHOLD",
-            _env_float("MEETINGBRO_WHISPER_VAD_THRESHOLD", 0.3),
-        ),
-        vad_min_speech_ms=_env_int(
-            "MEETINGBRO_PREVIEW_WHISPER_VAD_MIN_SPEECH_MS",
-            _env_int("MEETINGBRO_WHISPER_VAD_MIN_SPEECH_MS", 100),
-        ),
-        vad_min_silence_ms=_env_int(
-            "MEETINGBRO_PREVIEW_WHISPER_VAD_MIN_SILENCE_MS",
-            _env_int("MEETINGBRO_WHISPER_VAD_MIN_SILENCE_MS", 300),
-        ),
-        vad_speech_pad_ms=_env_int(
-            "MEETINGBRO_PREVIEW_WHISPER_VAD_SPEECH_PAD_MS",
-            _env_int("MEETINGBRO_WHISPER_VAD_SPEECH_PAD_MS", 400),
-        ),
-        multilingual=_env_bool("MEETINGBRO_PREVIEW_WHISPER_MULTILINGUAL", True),
-        language_detection_threshold=_env_float(
-            "MEETINGBRO_PREVIEW_WHISPER_LANGUAGE_DETECTION_THRESHOLD",
-            0.5,
-        ),
-        language_detection_segments=_env_int(
-            "MEETINGBRO_PREVIEW_WHISPER_LANGUAGE_DETECTION_SEGMENTS",
-            1,
-        ),
-    )
+def _build_preview_asr(hardware=None, formal_asr=None):
+    # Qwen preview always reuses the selected formal model.
+    return None
 
 
 @asynccontextmanager
@@ -528,16 +384,12 @@ async def lifespan(app: FastAPI):
     )
     startup_profile_settings = _runtime_settings_from_profile(startup_runtime_profile)
     storage = Storage(Path(os.environ.get("MEETINGBRO_DB", str(DEFAULT_DB_PATH))))
-    whisper_size = _env_str_auto("MEETINGBRO_WHISPER_SIZE", hardware.recommended_whisper_size)
-    asr, whisper_engine, whisper_device, whisper_compute_type = build_formal_asr(hardware)
+    asr_size = qwen_model_size()
+    asr, asr_engine, asr_device, asr_compute_type = build_formal_asr(hardware)
     _preview_asr_backend_name, _preview_asr_device = _configured_preview_runtime(
         hardware,
-        formal_device=whisper_device,
+        formal_device=asr_device,
     )
-    # Until a same-engine streaming state is implemented, avoid running a second
-    # Whisper/Qwen preview that can promote or replace formal MLX results.
-    if whisper_engine == "qwen3-mlx":
-        _preview_asr_backend_name, _preview_asr_device = "shared", whisper_device
     preview_asr = None
     if _should_load_preview_asr(
         profile_settings=startup_profile_settings,
@@ -554,17 +406,19 @@ async def lifespan(app: FastAPI):
         backlog_seconds=backlog_limit,
     )
     app.state.inference_coordinator.start()
-    app.state.final_summary_worker = FinalSummaryWorker(storage, LLMSummarizer, app.state.inference_coordinator)
+    # Launching the app must not resume legacy paid jobs without a user request.
+    storage.suspend_pending_final_summary_jobs()
+    app.state.final_summary_worker = FinalSummaryWorker(storage, LLMSummarizer, app.state.inference_coordinator, report_only=True)
     app.state.final_summary_worker.start()
     app.state.report_locks = {}
     app.state.hardware_profile = hardware
     app.state.asr = asr
-    app.state.whisper_engine = whisper_engine
-    app.state.runtime_hardware_label = f"{whisper_device}/{hardware.cpu_count}c"
-    app.state.runtime_hardware_summary = f"{whisper_engine} / {whisper_device}; preview {_preview_asr_backend_name}"
-    app.state.formal_asr_device = whisper_device
-    app.state.whisper_size = whisper_size
-    app.state.whisper_compute_type = whisper_compute_type
+    app.state.asr_engine = asr_engine
+    app.state.runtime_hardware_label = f"{asr_device}/{hardware.cpu_count}c"
+    app.state.runtime_hardware_summary = f"{asr_engine} / {asr_device}; preview {_preview_asr_backend_name}"
+    app.state.formal_asr_device = asr_device
+    app.state.asr_size = asr_size
+    app.state.asr_compute_type = asr_compute_type
     app.state.preview_asr = preview_asr
     app.state.preview_asr_backend_name = _preview_asr_backend_name
     app.state.preview_asr_device = _preview_asr_device
@@ -574,7 +428,7 @@ async def lifespan(app: FastAPI):
     app.state.diarizer = _build_diarizer(hardware)
     # Readiness state surfaced via /health so the desktop app can show a
     # "preparing speech model" screen instead of a hung UI on first run (the
-    # Whisper model downloads/loads lazily and can take minutes the first time).
+    # Qwen model loads lazily and can take time on the first run).
     app.state.ready = False
     app.state.ready_phase = "loading_model"
     app.state.ready_detail = None
@@ -594,16 +448,16 @@ async def lifespan(app: FastAPI):
             )
         app.state.preview_asr_prewarm_future = None
     logger.info(
-        "MeetingBro backend starting db=%s hardware=%s hardware_summary=%s whisper_size=%s whisper_device=%s compute=%s beam=%d cpu_threads=%d whisper_workers=%d preview_backend=%s preview_device=%s preview_compute=%s preview_asr_workers=%d preview_loaded=%s chunk=%.2fs accum=%.2fs silence_rms=%.4f audio_conditioning=%s denoise=%s pre_vad=%s pre_vad_conditioning=%s pre_vad_threshold=%.2f pre_vad_energy_rms=%.4f pre_vad_max=%.1fs weak_rescue=%s weak_rescue_rms=%.4f..%.4f language_lock=%s asr_retry=%s asr_safeguard=%s safeguard_rtf=%.2f suspicious_no_speech=%.2f suspicious_avg_logprob=%.2f suspicious_compression=%.2f mixed_mic_gain=%.2f mixed_system_gain=%.2f mixed_auto_balance=%s mixed_max_mic_boost=%.2f asr_workers=%d summary_workers=%d translation_workers=%d translation_backfill=%d translation_max_pending=%d",
+        "MeetingBro backend starting db=%s hardware=%s hardware_summary=%s asr_size=%s asr_device=%s compute=%s beam=%d cpu_threads=%d asr_workers=%d preview_backend=%s preview_device=%s preview_compute=%s preview_asr_workers=%d preview_loaded=%s chunk=%.2fs accum=%.2fs silence_rms=%.4f audio_conditioning=%s denoise=%s pre_vad=%s pre_vad_conditioning=%s pre_vad_threshold=%.2f pre_vad_energy_rms=%.4f pre_vad_max=%.1fs weak_rescue=%s weak_rescue_rms=%.4f..%.4f language_lock=%s asr_retry=%s asr_safeguard=%s safeguard_rtf=%.2f suspicious_no_speech=%.2f suspicious_avg_logprob=%.2f suspicious_compression=%.2f mixed_mic_gain=%.2f mixed_system_gain=%.2f mixed_auto_balance=%s mixed_max_mic_boost=%.2f asr_workers=%d summary_workers=%d translation_workers=%d translation_backfill=%d translation_max_pending=%d",
         storage._db_path,
         hardware.label,
         hardware.summary,
-        whisper_size,
-        whisper_device,
-        whisper_compute_type,
-        _env_int("MEETINGBRO_WHISPER_BEAM_SIZE", 1),
-        _env_int("MEETINGBRO_WHISPER_CPU_THREADS", 0),
-        _env_int("MEETINGBRO_WHISPER_NUM_WORKERS", 1),
+        asr_size,
+        asr_device,
+        asr_compute_type,
+        _env_int("MEETINGBRO_ASR_BEAM_SIZE", 1),
+        _env_int("MEETINGBRO_ASR_CPU_THREADS", 0),
+        _env_int("MEETINGBRO_ASR_NUM_WORKERS", 1),
         _preview_asr_backend_name,
         _preview_asr_device,
         _env_str_auto("MEETINGBRO_PREVIEW_WHISPER_COMPUTE_TYPE", "int8"),
@@ -657,7 +511,7 @@ async def lifespan(app: FastAPI):
             app.state.ready = True
             app.state.ready_phase = "ready"
             app.state.ready_detail = None
-            logger.info("formal ASR ready (model=%s device=%s)", whisper_size, whisper_device)
+            logger.info("formal ASR ready (model=%s device=%s)", asr_size, asr_device)
 
     warm_up_task = asyncio.create_task(_warm_up_formal_asr())
     try:
@@ -698,8 +552,8 @@ async def health() -> dict:
         "ready": bool(getattr(app.state, "ready", False)),
         "phase": getattr(app.state, "ready_phase", "loading_model"),
         "detail": getattr(app.state, "ready_detail", None),
-        "whisper_engine": getattr(app.state, "whisper_engine", "faster-whisper"),
-        "whisper_device": getattr(app.state, "formal_asr_device", "cpu"),
+        "asr_engine": getattr(app.state, "asr_engine", "qwen3"),
+        "asr_device": getattr(app.state, "formal_asr_device", "cpu"),
         "preview_backend": getattr(app.state, "preview_asr_backend_name", "shared"),
     }
 
@@ -725,15 +579,14 @@ async def get_config() -> dict:
     hardware = getattr(app.state, "hardware_profile", None)
     llm_key = os.environ.get("MEETINGBRO_LLM_API_KEY") or os.environ.get("LONGCAT_API_KEY")
     return {
-        "whisper_engine": getattr(app.state, "whisper_engine", "faster-whisper"),
+        "asr_engine": getattr(app.state, "asr_engine", "qwen3"),
         "metal_available": bool(getattr(hardware, "apple_metal_available", False)),
-        "whisper_cpp_available": bool(getattr(hardware, "whisper_cpp_available", False)),
-        "whisper_size": getattr(app.state, "whisper_size", "auto"),
-        "whisper_device": getattr(app.state, "formal_asr_device", "cpu"),
-        "whisper_compute_type": getattr(app.state, "whisper_compute_type", "auto"),
+        "asr_size": getattr(app.state, "asr_size", "auto"),
+        "asr_device": getattr(app.state, "formal_asr_device", "cpu"),
+        "asr_compute_type": getattr(app.state, "asr_compute_type", "auto"),
         "preview_backend": getattr(app.state, "preview_asr_backend_name", "shared"),
         "port": _env_int("MEETINGBRO_PORT", 8765),
-        "cuda_available": bool(getattr(hardware, "ctranslate2_cuda_available", False)),
+        "cuda_available": bool(getattr(hardware, "cuda_available", False)),
         "llm_configured": bool(llm_key or is_local_ollama_url(os.environ.get("MEETINGBRO_LLM_BASE_URL", ""))),
         "llm_key_masked": _mask_secret(llm_key),
         "llm_model": os.environ.get("MEETINGBRO_LLM_MODEL"),
@@ -741,8 +594,8 @@ async def get_config() -> dict:
         "hardware": {
             "label": getattr(app.state, "runtime_hardware_label", "unknown"),
             "summary": getattr(app.state, "runtime_hardware_summary", None),
-            "recommended_whisper_size": getattr(hardware, "recommended_whisper_size", "small"),
-            "recommended_whisper_device": getattr(hardware, "recommended_whisper_device", "cpu"),
+            "recommended_asr_size": "0.6B",
+            "recommended_asr_device": "metal" if getattr(hardware, "apple_metal_available", False) else "cpu",
             "recommended_runtime_profile": getattr(hardware, "recommended_runtime_profile", DEFAULT_RUNTIME_PROFILE),
         },
     }
@@ -774,7 +627,7 @@ async def test_llm(req: TestLlmRequest) -> dict:
     try:
         await loop.run_in_executor(
             None,
-            lambda: client.chat(system="You are a connectivity check.", user="Reply with OK.", max_tokens=5),
+            lambda: client.chat(system="You are a connectivity check.", user="Reply with OK.", max_tokens=256),
         )
     except Exception as exc:  # noqa: BLE001 - surface the provider error to the UI
         return {"ok": False, "model": model, "error": str(exc)}
@@ -842,6 +695,9 @@ async def delete_meeting_endpoint(meeting_id: str) -> dict[str, bool]:
     storage: Storage = app.state.storage
     if storage.get_meeting(meeting_id) is None:
         raise HTTPException(status_code=404, detail="meeting not found")
+    registry = getattr(app.state, "sessions", None)
+    if registry is not None and registry.contains_meeting(meeting_id):
+        raise HTTPException(status_code=409, detail="Stop the recording before deleting it")
     storage.delete_meeting(meeting_id)
     return {"deleted": True}
 
@@ -864,7 +720,8 @@ async def list_summaries(
     summary_type: Optional[str] = Query(default=None),
 ) -> list[SummarySnapshot]:
     storage: Storage = app.state.storage
-    return storage.list_snapshots(meeting_id, summary_type=summary_type)  # type: ignore[arg-type]
+    return [snap for snap in storage.list_snapshots(meeting_id, summary_type=summary_type)  # type: ignore[arg-type]
+            if snap.generation_method == 'llm']
 
 
 @app.get("/meetings/{meeting_id}/reports", response_model=list[ReportRevision])
@@ -872,7 +729,8 @@ async def list_reports(meeting_id: str) -> list[ReportRevision]:
     storage: Storage = app.state.storage
     if storage.get_meeting(meeting_id) is None:
         raise HTTPException(status_code=404, detail="meeting not found")
-    return storage.list_report_revisions(meeting_id)
+    return [report for report in storage.list_report_revisions(meeting_id)
+            if report.document.generation_method == 'llm']
 
 
 @app.get("/meetings/{meeting_id}/final-summary-job")
@@ -901,6 +759,8 @@ async def generate_meeting_report(meeting_id: str) -> ReportRevision:
     """Generate a new revision off the event loop; recording remains independent."""
     storage: Storage = app.state.storage
     lock = app.state.report_locks.setdefault(meeting_id, asyncio.Lock())
+    if lock.locked():
+        raise HTTPException(status_code=409, detail="A summary is already being generated for this meeting")
     async with lock:
         meeting = await asyncio.to_thread(storage.get_meeting, meeting_id)
         if meeting is None:
@@ -911,12 +771,14 @@ async def generate_meeting_report(meeting_id: str) -> ReportRevision:
         language = meeting.get("preferred_summary_language")
         if language not in ("zh", "en", "de"):
             language = "en"
-        # Report generation is local-only even when an external summary provider
-        # happens to be configured. Never send transcript text to that provider.
-        base_url = os.environ.get("MEETINGBRO_LLM_BASE_URL", "")
-        local_client = OpenAICompatibleClient.from_env() if is_local_ollama_url(base_url) else None
-        document = await app.state.inference_coordinator.run(
-            lambda: generate_report(segments, language=language, client=local_client))
+        client = OpenAICompatibleClient.from_env()
+        if client is None:
+            raise HTTPException(status_code=503, detail="No summary model is configured. Open model settings to configure one; only the transcript is available.")
+        try:
+            document = await app.state.inference_coordinator.run(
+                lambda: generate_report(segments, language=language, client=client))
+        except ReportGenerationError as exc:
+            raise HTTPException(status_code=502, detail={'code': exc.code, 'message': str(exc)}) from exc
         report_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"meetingbro:report:{meeting_id}"))
         existing = await asyncio.to_thread(storage.list_report_revisions, meeting_id)
         revision = max((r.revision for r in existing if r.report_id == report_id), default=0) + 1
@@ -1033,6 +895,56 @@ def _build_audio_source(
     raise ValueError(f"unsupported audio source: {source}")
 
 
+@app.websocket("/ws/audio-level")
+async def audio_level_preview(ws: WebSocket):
+    """Temporary input check: no ASR, transcript, recording or persistence."""
+    await ws.accept()
+    source = None
+    tasks = []
+    iterator = None
+    try:
+        name = ws.query_params.get("source", "mic")
+        if name not in {"mic", "mixed", "loopback", "system", "sample"}:
+            raise ValueError("Unsupported input preview source")
+        source = _build_audio_source(name, chunk_seconds=0.1,
+            mic_device=ws.query_params.get("mic_device"), speaker_name=ws.query_params.get("speaker_name"))
+        from .audio.level import audio_level
+        iterator = source.stream()
+        disconnected = asyncio.create_task(ws.receive())
+        tasks.append(disconnected)
+        while True:
+            chunk_task = asyncio.create_task(anext(iterator))
+            tasks.append(chunk_task)
+            done, _ = await asyncio.wait([disconnected, chunk_task], return_when=asyncio.FIRST_COMPLETED)
+            if disconnected in done:
+                break
+            try:
+                chunk = chunk_task.result()
+            except StopAsyncIteration:
+                break
+            tasks.remove(chunk_task)
+            await ws.send_json(audio_level(chunk.samples))
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        try:
+            await ws.send_json({"error": "Could not monitor this audio input. Check the device and microphone permission."})
+        except (RuntimeError, WebSocketDisconnect):
+            pass
+    finally:
+        if source is not None:
+            await source.aclose()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if iterator is not None:
+            await iterator.aclose()
+        try:
+            await ws.close()
+        except (RuntimeError, WebSocketDisconnect):
+            pass
+
+
 async def _forward_events(manager: SessionManager, ws: WebSocket, *, after: int = 0) -> None:
     async for ev in manager.events():
         if after and ev.sequence <= after:
@@ -1092,7 +1004,7 @@ async def session_ws(
         loopback_device = getattr(manager, "_active_loopback_device", None)
         storage: Storage = app.state.storage
         reports = storage.list_report_revisions(manager.meeting_id)
-        live_reports = [report for report in reports if report.report_type == "live"]
+        live_reports = [report for report in reports if report.document.generation_method == 'llm']
         preview = manager._state.fast_preview_segment
         if (manager._stopped.is_set() or not manager._pause_gate.is_set()
                 or (preview is not None and manager._state.last_emitted_end_time is not None
@@ -1101,9 +1013,9 @@ async def session_ws(
         snapshot = {
             "state": manager._session_state_payload(state="ended" if manager._stopped.is_set() else manager._active_state_name()).model_dump(mode="json"),
             "segments": [segment.model_dump(mode="json") for segment in storage.list_segments(manager.meeting_id)],
-            "snapshots": [item.model_dump(mode="json") for item in storage.list_snapshots(manager.meeting_id)],
+            "snapshots": [item.model_dump(mode="json") for item in storage.list_snapshots(manager.meeting_id) if item.generation_method == 'llm'],
             "notes": [item.model_dump(mode="json") for item in storage.list_notes(manager.meeting_id)],
-            "report": live_reports[-1].model_dump(mode="json") if live_reports else None,
+            "report": max(live_reports, key=lambda report: report.created_at).model_dump(mode="json") if live_reports else None,
             "preview": preview.model_dump(mode="json") if preview is not None else None,
         }
         try:
@@ -1192,7 +1104,7 @@ async def session_ws(
 
             # MLX preview reuses the formal model on the same single-worker executor.
             # Other shared backends keep their existing formal-only behaviour.
-            if session_preview_backend_name == "shared" and getattr(app.state, "whisper_engine", "") != "qwen3-mlx":
+            if session_preview_backend_name == "shared" and not getattr(app.state, "asr_engine", "").startswith("qwen3"):
                 profile_settings["fast_preview_enabled"] = False
 
             # Speaker diarization is shared across sessions; reset its accumulated
@@ -1213,12 +1125,12 @@ async def session_ws(
                 diarizer=session_diarizer,
                 preview_asr=session_preview_asr,
                 preview_asr_backend_name=session_preview_backend_name,
-                reuse_formal_preview_identity=getattr(app.state, "whisper_engine", "") == "qwen3-mlx",
+                reuse_formal_preview_identity=getattr(app.state, "asr_engine", "").startswith("qwen3"),
                 hardware_profile_label=getattr(app.state, "runtime_hardware_label", "unknown"),
                 hardware_summary=getattr(app.state, "runtime_hardware_summary", None),
                 formal_asr_device=getattr(app.state, "formal_asr_device", "cpu"),
                 preview_asr_device=session_preview_device,
-                compute_gpu_available=(getattr(app.state.hardware_profile, "ctranslate2_cuda_available", False) or getattr(app.state.hardware_profile, "apple_metal_available", False)),
+                compute_gpu_available=(getattr(app.state.hardware_profile, "cuda_available", False) or getattr(app.state.hardware_profile, "apple_metal_available", False)),
                 preview_asr_fallback_on_error=_env_bool(
                     "MEETINGBRO_PREVIEW_FALLBACK_ON_ERROR",
                     session_preview_backend_name != "qwen3",
@@ -1227,9 +1139,11 @@ async def session_ws(
                 translator=LLMTranslator(),
                 storage=app.state.storage,
                 enqueue_final_summary=app.state.final_summary_worker.enqueue,
-            inference_coordinator=app.state.inference_coordinator,
-            live_summaries_enabled=(_env_bool("MEETINGBRO_LIVE_SUMMARIES_ENABLED", True) and _llm_resource_mode() != "post_recording"),
-                final_summary_enabled=_env_bool("MEETINGBRO_FINAL_SUMMARY_ENABLED", True),
+                inference_coordinator=app.state.inference_coordinator,
+                # The summary page owns periodic requests. Stopping capture
+                # queues one final report after all transcript audio is flushed.
+                live_summaries_enabled=False,
+                final_summary_enabled=True,
                 forced_language=forced_language,
                 summary_language=summary_lang,
                 live_translation_language=None,
@@ -1452,7 +1366,7 @@ async def session_ws(
                             }
                         )
                     )
-                if next_preview_backend_name == "shared" and getattr(app.state, "whisper_engine", "") != "qwen3-mlx":
+                if next_preview_backend_name == "shared" and not getattr(app.state, "asr_engine", "").startswith("qwen3"):
                     next_profile_settings["fast_preview_enabled"] = False
                 next_vocabulary_hint = payload.get("vocabulary_hint", manager._cfg.vocabulary_hint)
                 if next_vocabulary_hint is not None:
@@ -1519,7 +1433,7 @@ async def session_ws(
             elif data.get("type") == "request_summary":
                 payload = data.get("payload") or {}
                 summary_type = payload.get("summary_type")
-                if summary_type in {"rolling_summary", "cumulative_meeting_summary"}:
+                if summary_type in {"rolling_summary", "cumulative_meeting_summary", "refined_transcript"}:
                     await manager.request_summary(summary_type)
             elif data.get("type") == "stop":
                 stop_requested = True

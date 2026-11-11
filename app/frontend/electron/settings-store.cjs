@@ -22,13 +22,11 @@ function defaultSettings() {
     firstRunComplete: false,
     backendPort: 8765,
     llm: { apiKey: "", baseUrl: "http://127.0.0.1:11434/v1", model: "qwen2.5:3b" },
-    liveSummariesEnabled: true,
-    finalSummaryEnabled: true,
+    liveSummariesEnabled: false,
+    finalSummaryEnabled: false,
     llmResourceMode: "balanced", // realtime | balanced | post_recording
-    whisperEngine: "auto", // auto | faster-whisper | whisper-cpp
-    whisperSize: "auto", // auto | tiny | base | small | medium | large-v2 | large-v3
-    whisperDevice: "auto", // auto | cpu | cuda | metal
-    previewBackend: "qwen3", // qwen3 | shared
+    qwenModelSize: "0.6B",
+
   };
 }
 
@@ -37,9 +35,11 @@ function defaultSettings() {
 function withDefaults(raw) {
   const d = defaultSettings();
   if (!raw || typeof raw !== "object") return d;
+  const { whisperEngine, whisperSize, whisperDevice, previewBackend, ...current } = raw;
   return {
     ...d,
-    ...raw,
+    ...current,
+    qwenModelSize: ["0.6B", "1.7B"].includes(current.qwenModelSize) ? current.qwenModelSize : "0.6B",
     llm: { ...d.llm, ...(raw.llm || {}) },
   };
 }
@@ -71,7 +71,7 @@ function writeSettings(partial) {
 // Settings that only take effect at backend startup (changing them requires a
 // backend restart). Changing anything else (audio source, languages, runtime
 // profile, vocabulary) is applied live over the WebSocket and never restarts.
-const STARTUP_KEYS = ["backendPort", "llm", "liveSummariesEnabled", "finalSummaryEnabled", "llmResourceMode", "whisperEngine", "whisperSize", "whisperDevice", "previewBackend"];
+const STARTUP_KEYS = ["backendPort", "llm", "liveSummariesEnabled", "finalSummaryEnabled", "llmResourceMode", "qwenModelSize"];
 
 function startupSignature(settings) {
   const s = withDefaults(settings);
@@ -81,10 +81,7 @@ function startupSignature(settings) {
     liveSummariesEnabled: s.liveSummariesEnabled,
     finalSummaryEnabled: s.finalSummaryEnabled,
     llmResourceMode: s.llmResourceMode,
-    whisperEngine: s.whisperEngine,
-    whisperSize: s.whisperSize,
-    whisperDevice: s.whisperDevice,
-    previewBackend: s.previewBackend,
+    qwenModelSize: s.qwenModelSize,
   });
 }
 
@@ -103,19 +100,7 @@ function settingsToEnv(settings) {
   if (s.llm && s.llm.baseUrl) env.MEETINGBRO_LLM_BASE_URL = s.llm.baseUrl;
   if (s.llm && s.llm.model) env.MEETINGBRO_LLM_MODEL = s.llm.model;
 
-  if (s.whisperEngine) env.MEETINGBRO_WHISPER_ENGINE = s.whisperEngine;
-  if (s.whisperSize) env.MEETINGBRO_WHISPER_SIZE = s.whisperSize; // backend treats "auto" as recommended
-  if (s.whisperDevice) env.MEETINGBRO_WHISPER_DEVICE = s.whisperDevice;
-
-  if (s.previewBackend === "qwen3") {
-    env.MEETINGBRO_PREVIEW_ASR_BACKEND = "qwen3";
-  } else if (s.previewBackend === "whisper-streaming") {
-    env.MEETINGBRO_PREVIEW_ASR_BACKEND = "whisper-streaming";
-  } else {
-    // "shared" reuses the formal model for previews (no separate preview model).
-    env.MEETINGBRO_PREVIEW_ASR_BACKEND = "shared";
-    env.MEETINGBRO_PREVIEW_WHISPER_SIZE = "shared";
-  }
+  env.MEETINGBRO_QWEN3_MODEL_SIZE = s.qwenModelSize;
   return env;
 }
 

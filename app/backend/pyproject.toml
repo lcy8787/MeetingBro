@@ -12,7 +12,6 @@ dependencies = [
   "uvicorn[standard]>=0.30",
   "pydantic>=2.7",
   "websockets>=12",
-  "faster-whisper>=1.0",
   "silero-vad>=6.2",
   "sounddevice>=0.5",
   "soundfile>=0.12",
@@ -21,6 +20,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+qwen = ["qwen-asr>=0.0.6"]
 mlx = [
   "mlx-qwen3-asr==0.4.4; platform_system == 'Darwin' and platform_machine == 'arm64'",
   "huggingface-hub>=0.24; platform_system == 'Darwin' and platform_machine == 'arm64'",

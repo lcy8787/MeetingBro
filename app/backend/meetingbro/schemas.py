@@ -50,10 +50,18 @@ class SummarySnapshot(BaseModel):
     time_end: float
     language: LanguageCode
     content: str
+    # Legacy rows have no reliable model provenance and must not be published.
+    generation_method: Literal["unknown", "extractive", "llm"] = "unknown"
     source_segment_ids: list[str] = Field(default_factory=list)
     is_latest: bool = False
     translations: dict[LanguageCode, str] = Field(default_factory=dict)
     created_at: datetime
+
+
+class ReportOption(BaseModel):
+    label: str
+    text: str
+    source_segment_ids: list[str] = Field(default_factory=list)
 
 
 class ReportBlock(BaseModel):
@@ -63,6 +71,7 @@ class ReportBlock(BaseModel):
     text: str
     title: str = ""
     detail: str = ""
+    options: list[ReportOption] = Field(default_factory=list, max_length=8)
     source_segment_ids: list[str] = Field(default_factory=list)
 
 

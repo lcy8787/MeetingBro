@@ -19,12 +19,11 @@ export interface AudioDevices {
 }
 
 export interface BackendConfig {
-  whisper_engine: string;
+  asr_engine: string;
   metal_available: boolean;
-  whisper_cpp_available: boolean;
-  whisper_size: string;
-  whisper_device: string;
-  whisper_compute_type: string;
+  asr_size: string;
+  asr_device: string;
+  asr_compute_type: string;
   preview_backend: string;
   port: number;
   cuda_available: boolean;
@@ -35,8 +34,8 @@ export interface BackendConfig {
   hardware: {
     label: string;
     summary: string | null;
-    recommended_whisper_size: string;
-    recommended_whisper_device: string;
+    recommended_asr_size: string;
+    recommended_asr_device: string;
     recommended_runtime_profile: string;
   };
 }
@@ -108,7 +107,17 @@ export async function retryFinalSummaryJob(id: string): Promise<FinalSummaryJob>
 
 export async function generateMeetingReport(id: string): Promise<ReportRevision> {
   const res = await fetch(`${httpBase()}/meetings/${encodeURIComponent(id)}/reports/generate`, { method: "POST" });
-  if (!res.ok) throw new Error(`report generation ${res.status}`);
+  if (!res.ok) {
+    if (res.status === 503) throw new Error("Configure a summary model in Settings before generating a summary.");
+    if (res.status === 502) {
+      const body = await res.json().catch(() => null);
+      if (body?.detail?.code === "output_truncated") throw new Error("The model reached its output limit before finishing. No summary was published; automatic summaries are off.");
+      if (body?.detail?.code === "empty_response") throw new Error("The model returned no final answer. No summary was published; automatic summaries are off.");
+      throw new Error("The model could not generate a valid summary. Check the model settings and try again.");
+    }
+    if (res.status === 409) throw new Error("A summary is already being generated for this meeting.");
+    throw new Error(`report generation ${res.status}`);
+  }
   return res.json();
 }
 

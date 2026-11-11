@@ -1,0 +1,35 @@
+.recorder-app { --bg: #101813; --bg-accent: #16231b; --surface: #1b2921; --surface-strong: #24332a; --text: #e3ece6; --muted: #99ada1; --border: #324439; background: #101813; color: var(--text); color-scheme: dark; }
+.recorder-app button:focus-visible, .recorder-app input:focus-visible, .recorder-app select:focus-visible { outline: 2px solid #5ddab0; outline-offset: 3px; }
+.live-caption-sheet .panel { background: #18231c; border: 1px solid #304237; box-shadow: none; border-radius: 18px; }
+.live-caption-sheet .panel header { background: transparent; padding: 18px 22px; border-bottom: 1px solid #304237; }
+.live-caption-sheet .panel h2 { font-size: 17px; color: #d8ebe1; }
+.live-caption-sheet .panel .subtitle, .live-caption-sheet .panel .range { color: #99ada1; }
+.live-caption-sheet .transcript-body { max-height: 65vh; min-height: 220px; overflow: auto; padding: 18px 22px; font-size: 17px; line-height: 1.8; }
+.live-caption-sheet .segment { grid-template-columns: 90px minmax(0, 1fr); border-bottom-color: #2a3b31; }
+.live-caption-sheet .ts { color: #95b1a1; }
+.live-caption-sheet .segment-subtitle { color: #8fd5b7; }
+.live-caption-sheet .preview-segment { background: #1f3429; border-color: #315a43; color: #a6c6b3; }
+.live-caption-sheet .summary-only-banner, .live-caption-sheet .summary-only-stat { background: #21352a; border-color: #315a43; }
+.bookmark-form { display: flex; gap: 8px; margin-bottom: 14px; }
+.bookmark-form input { min-width: 0; flex: 1; background: #18271e; border: 1px solid #304c3c; border-radius: 9px; padding: 9px 12px; color: #d9e7df; font: inherit; }
+.bookmark-form button, .live-caption-sheet button { background: #244332; border: 1px solid #3b624c; color: #c2ead4; border-radius: 8px; padding: 8px 12px; }
+.meeting-tools { margin-top: 24px; border: 1px solid #2e4437; background: #18251d; border-radius: 16px; color: #d9e7df; }
+.meeting-tools > summary { cursor: pointer; padding: 18px 22px; font-size: 14px; color: #9bd5b9; }
+.meeting-tools-body { padding: 0 22px 22px; }
+.meeting-tools-picker { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; font-size: 13px; }
+.meeting-tools select { background: #263e30; color: #e2efe7; border: 1px solid #365740; border-radius: 8px; padding: 8px 12px; }
+.meeting-tools article, .meeting-tools li { border-bottom: 1px solid #2b4033; padding: 15px 0; }
+.meeting-tools p { white-space: pre-wrap; line-height: 1.8; overflow-wrap: anywhere; }
+.meeting-tools small { display: block; margin-bottom: 6px; color: #8bab98; font-size: 12px; }
+.meeting-tools ul, .meeting-tools ol { padding-left: 20px; }
+.meeting-tools-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+.meeting-tools-actions button { background: #264b36; color: #c5e9d5; border: 1px solid #3b614a; padding: 8px 12px; border-radius: 8px; cursor: pointer; }
+.tools-empty { color: #94ac9d; font-size: 13px; }
+.recorder-diagnostics .diagnostics-body { display: flex; flex-direction: column; gap: 12px; }
+.recorder-diagnostics .diagnostic-card { background: #1e3025; border-color: #354b3d; box-shadow: none; }
+.recorder-diagnostics .diagnostic-value { color: #d8eadd; }
+.recorder-diagnostics .advice-item { background: #24392b; border-color: #354b3d; }
+.recorder-diagnostics .advice-item span, .recorder-diagnostics .diagnostic-note { color: #b0c3b6; }
+.diagnostics-compute { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
+.recorder-app .confirm-dialog { background: #1e2d23; color: #e3ece6; border-color: #3f5948; }
+@media (max-width: 600px) { .live-caption-sheet .transcript-body { padding: 12px; } .live-caption-sheet .segment { grid-template-columns: 65px minmax(0, 1fr); gap: 8px; } }

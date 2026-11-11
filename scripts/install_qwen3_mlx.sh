@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-# Install the optional Qwen3-ASR MLX backend and its local 0.6B model.
+# Install Qwen3-ASR MLX: ./scripts/install_qwen3_mlx.sh 0.6B (or 1.7B).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON="${ROOT}/app/backend/.venv/bin/python"
-MODEL_DIR="${MEETINGBRO_QWEN3_MLX_MODEL:-${ROOT}/models/Qwen3-ASR-0.6B-4bit}"
-MODEL_REPO="moona3k/mlx-qwen3-asr-0.6b-4bit"
-MODEL_REVISION="4c59c533f95c84afb796655e814709034f826f04"
+SIZE="${1:-${MEETINGBRO_QWEN3_MODEL_SIZE:-0.6B}}"
+case "${SIZE}" in
+  0.6B) MODEL_REPO="moona3k/mlx-qwen3-asr-0.6b-4bit"; MODEL_REVISION="4c59c533f95c84afb796655e814709034f826f04" ;;
+  1.7B) MODEL_REPO="moona3k/mlx-qwen3-asr-1.7b-4bit"; MODEL_REVISION="main" ;;
+  *) printf '%s\n' 'Choose 0.6B or 1.7B.' >&2; exit 1 ;;
+esac
+MODEL_DIR="${MEETINGBRO_QWEN3_MLX_MODEL:-${ROOT}/models/Qwen3-ASR-${SIZE}-4bit}"
 
 if [[ "$(uname -s)" != Darwin || "$(uname -m)" != arm64 ]]; then
-  printf '%s\n' 'Qwen3 MLX requires macOS on Apple Silicon. Use a Whisper engine on this platform.' >&2
+  printf '%s\n' 'Qwen3 MLX requires macOS on Apple Silicon. Install the qwen extra on this platform instead.' >&2
   exit 1
 fi
 if [[ ! -x "${PYTHON}" ]]; then
@@ -31,7 +35,7 @@ fi
 
 mkdir -p "$(dirname "${MODEL_DIR}")"
 STAGING="$(mktemp -d "${MODEL_DIR}.partial.XXXXXX")"
-printf 'Downloading %s into %s (approximately 538 MB).\n' "${MODEL_REPO}" "${STAGING}"
+printf 'Downloading %s into %s.\n' "${MODEL_REPO}" "${STAGING}"
 if ! HF_HUB_DISABLE_TELEMETRY=1 "${PYTHON}" - "${MODEL_REPO}" "${MODEL_REVISION}" "${STAGING}" <<'PY'
 import sys
 from huggingface_hub import snapshot_download
@@ -52,4 +56,4 @@ if [[ -e "${MODEL_DIR}" ]]; then
 fi
 mv "${STAGING}" "${MODEL_DIR}"
 printf 'Qwen3 MLX model installed: %s\n' "${MODEL_DIR}"
-printf '%s\n' 'Restart the backend. Auto selects Qwen3 MLX when the package and model are available.'
+printf '%s\n' 'Restart the backend. Select the installed model size in Settings > Models.'

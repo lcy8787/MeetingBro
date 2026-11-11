@@ -271,9 +271,10 @@ def export_meeting(
         raise KeyError(meeting_id)
     client_metadata = {k: v for k, v in (client_metadata or {}).items() if v is not None}
     segments = storage.list_segments(meeting_id)
-    snapshots = storage.list_snapshots(meeting_id)
+    snapshots = [snap for snap in storage.list_snapshots(meeting_id) if snap.generation_method == 'llm']
     notes = storage.list_notes(meeting_id)
-    reports = storage.list_report_revisions(meeting_id)
+    reports = [report for report in storage.list_report_revisions(meeting_id)
+               if report.document.generation_method == 'llm']
 
     if export_dir is None:
         export_root.mkdir(parents=True, exist_ok=True)
@@ -296,15 +297,34 @@ def export_meeting(
         bilingual=bilingual,
         target_language=target_language,
     )
-    _write_summary(summary_path, meeting=meeting, snapshots=snapshots, notes=notes)
-    files = ["transcript.md", "summary.md", "metadata.json"]
+    files = ["transcript.md", "metadata.json"]
+    if snapshots:
+        _write_summary(summary_path, meeting=meeting, snapshots=snapshots, notes=notes)
+        files.insert(1, "summary.md")
     if reports:
         latest_by_id = {report.report_id: report for report in reports}
         latest_report = max(latest_by_id.values(), key=lambda report: report.created_at)
         write_standalone_report(export_dir / "meeting-report.html", latest_report, segments)
         files.append("meeting-report.html")
+        if not snapshots:
+            # Manual/automatic interactive reports are the summary source when
+            # the legacy snapshot pipeline is disabled.
+            doc = latest_report.document
+            lines = [f'# {doc.title}', doc.executive_summary]
+            lines.extend(block.text for block in doc.takeaways)
+            for section in doc.sections:
+                lines.append(f'## {section.title}')
+                for block in section.blocks:
+                    lines.extend(filter(None, (block.title, block.text, block.detail)))
+                    lines.extend(f'{option.label}: {option.text}' for option in block.options)
+            summary_path.write_text('\n\n'.join(filter(None, lines)) + '\n', encoding='utf-8')
+            files.insert(1, 'summary.md')
     if _write_clean_conversation(clean_conversation_path, meeting=meeting, snapshots=snapshots):
         files.insert(1, "clean_conversation.md")
+    if notes and not snapshots:
+        # User-authored notes are not generated summaries and must not be lost.
+        (export_dir / 'notes.md').write_text('# Saved Notes\n\n' + '\n\n'.join(note.content for note in notes) + '\n', encoding='utf-8')
+        files.append('notes.md')
 
     metadata = {
         "meeting_id": meeting_id,

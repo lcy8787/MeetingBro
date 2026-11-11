@@ -10,10 +10,43 @@ import logging
 import time
 from pathlib import Path
 from typing import Any
+from functools import lru_cache
 
 _DOTENV_LOADED = False
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class LLMResponseError(RuntimeError):
+    """A provider response cannot be used as a completed model answer."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@lru_cache(maxsize=1)
+def _openrouter_reasoning_options() -> dict[str, dict | None]:
+    """Public model metadata, fetched once without credentials or completions."""
+    try:
+        with urllib.request.urlopen('https://openrouter.ai/api/v1/models', timeout=5) as response:
+            payload = json.load(response)
+        return {item['id']: item.get('reasoning') for item in payload['data'] if isinstance(item, dict) and isinstance(item.get('id'), str)}
+    except (OSError, ValueError, KeyError, TypeError):
+        _LOGGER.debug('OpenRouter model capabilities are unavailable')
+        return {}
+
+
+def _openrouter_reasoning(model: str) -> dict | None:
+    options = _openrouter_reasoning_options()
+    if model in options and options[model] is None:
+        return None  # Do not require reasoning support from non-reasoning models.
+    capabilities = options.get(model) or {}
+    efforts = capabilities.get('supported_efforts') or []
+    if capabilities.get('mandatory') is False and 'none' in efforts:
+        return {'effort': 'none', 'exclude': True}
+    effort = next((value for value in ('minimal', 'low', 'medium', 'high') if value in efforts), 'low')
+    return {'effort': effort, 'exclude': True}
 
 
 def _load_dotenv_if_present() -> None:
@@ -138,6 +171,7 @@ class OpenAICompatibleClient:
         user: str,
         max_tokens: int,
         temperature: float = 0.2,
+        response_schema: dict[str, Any] | None = None,
     ) -> str:
         base_url = self._cfg.base_url.rstrip("/")
         if base_url.endswith("/v1"):
@@ -154,6 +188,19 @@ class OpenAICompatibleClient:
             "temperature": temperature,
             "stream": False,
         }
+        if urlparse(base_url).hostname == "openrouter.ai":
+            # Reasoning models can otherwise spend the whole output allowance
+            # thinking and return no answer. Keep room for the actual summary.
+            reasoning = _openrouter_reasoning(self._cfg.model)
+            if reasoning is not None:
+                body["reasoning"] = reasoning
+            if response_schema is not None:
+                body["response_format"] = {"type": "json_schema", "json_schema": {
+                    "name": "meeting_report", "strict": True, "schema": response_schema,
+                }}
+                body["provider"] = {"require_parameters": True}
+        elif response_schema is not None:
+            body["response_format"] = {"type": "json_object"}
         req = urllib.request.Request(
             url,
             data=json.dumps(body).encode("utf-8"),
@@ -169,7 +216,7 @@ class OpenAICompatibleClient:
             with urllib.request.urlopen(req, timeout=self._cfg.timeout_seconds) as resp:
                 raw = resp.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
+            detail = exc.read().decode("utf-8", errors="replace").replace(self._cfg.api_key, '<redacted>')
             _LOGGER.warning(
                 "LLM HTTP error model=%s url=%s code=%s detail=%s",
                 self._cfg.model,
@@ -183,20 +230,32 @@ class OpenAICompatibleClient:
             _LOGGER.debug("LLM request finished model=%s duration=%.3fs", self._cfg.model, duration)
 
         data = json.loads(raw)
-        choice = data.get("choices", [{}])[0]
+        if not isinstance(data, dict):
+            raise LLMResponseError('invalid_response', 'The model provider returned an invalid response.')
+        if data.get('error'):
+            raise LLMResponseError('provider_error', 'The model provider returned an error instead of an answer.')
+        choices = data.get('choices')
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise LLMResponseError('empty_response', 'The model provider returned no completed answer.')
+        choice = choices[0]
+        if choice.get('finish_reason') == 'length':
+            raise LLMResponseError('output_truncated', 'The model reached its output token limit before completing the answer. Reduce reasoning or increase the output limit.')
+        if choice.get('finish_reason') in {'error', 'content_filter'}:
+            raise LLMResponseError('incomplete_response', 'The model provider did not complete the answer.')
         message = choice.get("message", {}) if isinstance(choice, dict) else {}
         content = ""
         # Primary: standard OpenAI-style chat message content
         if isinstance(message, dict):
-            content = message.get("content") or message.get("reasoning") or message.get("text") or ""
+            if message.get('refusal'):
+                raise LLMResponseError('refusal', 'The model declined to generate an answer.')
+            # Reasoning is not the final answer, even if it contains JSON.
+            content = message.get("content") or message.get("text") or ""
         # Fallbacks for other provider shapes
         if not content:
             content = choice.get("text") if isinstance(choice, dict) else ""
-        content = (content or "").strip()
+        if isinstance(content, list):
+            content = ''.join(part.get('text', '') for part in content if isinstance(part, dict) and part.get('type') == 'text')
+        content = content.strip() if isinstance(content, str) else ''
         if not content:
-            _LOGGER.warning(
-                "LLM returned empty content for model=%s; raw_response=%s",
-                self._cfg.model,
-                raw if len(raw) < 4000 else raw[:4000] + "...",
-            )
+            raise LLMResponseError('empty_response', 'The model returned no final answer. Reasoning text cannot be used as a summary.')
         return content

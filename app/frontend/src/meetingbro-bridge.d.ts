@@ -31,10 +31,8 @@ export interface AppSettings {
   liveSummariesEnabled: boolean;
   finalSummaryEnabled: boolean;
   llmResourceMode: "realtime" | "balanced" | "post_recording";
-  whisperEngine: "auto" | "faster-whisper" | "whisper-cpp" | "qwen3-mlx";
-  whisperSize: string;
-  whisperDevice: string;
-  previewBackend: "qwen3" | "shared" | "whisper-streaming";
+  qwenModelSize: "0.6B" | "1.7B";
+
 }
 
 export interface SaveSettingsResult {

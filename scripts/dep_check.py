@@ -2,7 +2,7 @@ import importlib
 import os
 
 mods = [
-    "faster_whisper",
+    "mlx_qwen3_asr" if __import__("platform").system() == "Darwin" and __import__("platform").machine() == "arm64" else "qwen_asr",
     "sounddevice",
     "soundfile",
     "numpy",

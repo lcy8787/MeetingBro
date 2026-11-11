@@ -3,11 +3,11 @@
 IMPORTANT: This is a batch / near-streaming preview path, NOT true token-level
 streaming ASR.  Each ``transcribe()`` call decodes a complete audio window
 offline through ``sherpa_onnx.OfflineRecognizer.from_qwen3_asr`` and returns at
-most one ``ASRSegment``, exactly as ``FasterWhisperAdapter`` does.
+most one ``ASRSegment``.
 
 sherpa-onnx is an optional dependency.  A clear ``RuntimeError`` is raised only
 when this adapter is *constructed* (i.e. when the qwen3 backend is selected via
-env), so the normal faster-whisper startup path is completely unaffected.
+env), so users of the MLX/native Qwen backend do not need sherpa-onnx.
 """
 from __future__ import annotations
 

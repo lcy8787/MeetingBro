@@ -10,6 +10,9 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from ..reports.live import update_live_report
+from ..reports.generator import generate_report
+from ..llm.openai_compatible import OpenAICompatibleClient
+from ..schemas import ReportRevision
 from ..resources.coordinator import InferenceCoordinator
 from ..schemas import SummarySnapshot
 from ..storage.db import Storage
@@ -47,7 +50,7 @@ def _snapshots(meeting_id: str, language: str, segments, result: dict) -> list[S
     sources = [segment.id for segment in segments]
     return [SummarySnapshot(id=str(uuid.uuid4()), meeting_id=meeting_id, summary_type=kind,
                             time_start=0, time_end=end, language=language, content=content,
-                            source_segment_ids=sources, is_latest=True, created_at=now)
+                            source_segment_ids=sources, is_latest=True, created_at=now, generation_method='llm')
             for kind, content in (('final_summary', result['final_summary'].strip()),
                                   ('chapter_list', json.dumps(chapters, ensure_ascii=False)),
                                   ('action_item_list', json.dumps(actions, ensure_ascii=False)))]
@@ -55,10 +58,11 @@ def _snapshots(meeting_id: str, language: str, segments, result: dict) -> list[S
 
 class FinalSummaryWorker:
     def __init__(self, storage: Storage, summarizer_factory: Callable[[], Summarizer],
-                 coordinator: InferenceCoordinator | None = None):
+                 coordinator: InferenceCoordinator | None = None, *, report_only: bool = False):
         self.storage = storage
         self._factory = summarizer_factory
         self._coordinator = coordinator
+        self._report_only = report_only
         self._wake = asyncio.Event()
         self._task: asyncio.Task | None = None
 
@@ -93,20 +97,39 @@ class FinalSummaryWorker:
                 segments = self.storage.list_segments(job['meeting_id'])
                 if not segments:
                     raise ValueError('Meeting has no saved transcript')
-                memory = self.storage.list_snapshots(job['meeting_id'], 'meeting_memory')
+                memory = [snap for snap in self.storage.list_snapshots(job['meeting_id'], 'meeting_memory')
+                          if snap.generation_method == 'llm']
                 previous = memory[-1].content if memory else None
-                summarizer = self._factory()
+                summarizer = self._factory() if not self._report_only else None
                 def finalize():
+                    if self._report_only:
+                        client = OpenAICompatibleClient.from_env()
+                        if client is None:
+                            raise RuntimeError('No summary model is configured')
+                        # The interactive document is the final summary. Do not
+                        # pay for a second, parallel summary of the same meeting.
+                        return None, generate_report(segments, language=job['language'], client=client)
                     # An unconfigured provider is a retryable failure, not a successful LLM job.
+                    assert summarizer is not None
                     ensure = getattr(summarizer, '_ensure_client', None)
                     if ensure is not None and ensure() is None:
                         raise RuntimeError('No summary model is configured')
-                    return summarizer.finalize_meeting(segments, language=job['language'],
+                    if getattr(summarizer, 'generation_method', 'unknown') != 'llm':
+                        raise RuntimeError('A model-backed summarizer is required')
+                    result = summarizer.finalize_meeting(segments, language=job['language'],
                                                        vocabulary=job['vocabulary'], meeting_memory=previous)
-                result = (await self._coordinator.run(finalize) if self._coordinator is not None
+                    client = OpenAICompatibleClient.from_env()
+                    document = generate_report(segments, language=job['language'], client=client) if client else None
+                    return result, document
+                result, document = (await self._coordinator.run(finalize) if self._coordinator is not None
                           else await asyncio.to_thread(finalize))
-                snapshots = _snapshots(job['meeting_id'], job['language'], segments, result)
-                if self.storage.complete_final_summary_job(job['id'], snapshots):
+                snapshots = _snapshots(job['meeting_id'], job['language'], segments, result) if result is not None else []
+                # Commit the HTML document, snapshots and success status together.
+                report = None
+                if document is not None:
+                    report = ReportRevision(report_id=str(uuid.uuid4()), meeting_id=job['meeting_id'],
+                        report_type='meeting', revision=1, document=document, created_at=datetime.now(timezone.utc))
+                if self.storage.complete_final_summary_job(job['id'], snapshots, report) and document is None and snapshots:
                     try:
                         update_live_report(self.storage, snapshots[0])
                     except Exception:

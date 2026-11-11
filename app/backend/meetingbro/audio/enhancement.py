@@ -113,7 +113,7 @@ class AudioConditioner:
     """Small ASR-facing level conditioner.
 
     The intent is to remove DC offset, gently lift quiet valid speech, and keep
-    peaks below clipping before speech detection or Whisper sees the buffer.
+    peaks below clipping before speech detection or Qwen3 sees the buffer.
     """
 
     def __init__(
@@ -149,7 +149,7 @@ class AudioConditioner:
 
         out = samples.astype(np.float32, copy=False)
         if self._remove_dc:
-            # Capture devices can have a small DC bias; Whisper and RMS gates do
+            # Capture devices can have a small DC bias; Qwen3 and RMS gates do
             # better when the waveform is centered around zero.
             out = out - np.float32(np.mean(out))
 

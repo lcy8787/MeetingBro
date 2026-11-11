@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 from fastapi import HTTPException
 
-from meetingbro.reports.generator import generate_report
+from meetingbro.reports.generator import ReportGenerationError, _chunks, generate_report
 from meetingbro.schemas import TranscriptSegment
 from meetingbro.storage.db import Storage
 
@@ -33,17 +33,17 @@ def test_generation_requires_real_citations_and_supported_numbers():
     assert doc.sections[0].blocks[0].source_segment_ids == ['s']
     for text, citation in [('Sales: 99 units', 's'), ('Sales: 12 units', 'wrong')]:
         client = Client(json.dumps({'blocks': [{'type': 'bullet', 'text': text, 'source_segment_ids': [citation]}]}))
-        doc = generate_report([segment()], language='en', client=client)
-        assert doc.generation_method == 'extractive'
-        assert doc.sections[0].blocks[0].text == 'Sales were 12 units'
-        assert doc.warnings
+        with pytest.raises(ReportGenerationError):
+            generate_report([segment()], language='en', client=client)
 
 
 def test_long_individual_segment_is_not_truncated():
     text = 'a' * 17000
-    doc = generate_report([segment(text)], language='en')
-    assert ''.join(section.blocks[0].text for section in doc.sections) == text
-    assert len(doc.sections) == 3
+    chunks = _chunks([segment(text)])
+    assert ''.join(piece for chunk in chunks for _, piece in chunk) == text
+    assert len(chunks) == 3
+    with pytest.raises(ReportGenerationError, match='No summary model'):
+        generate_report([segment(text)], language='en')
 
 
 def test_report_endpoint_persists_new_revisions_and_handles_missing_transcript(tmp_path, monkeypatch):
@@ -67,7 +67,14 @@ def test_report_endpoint_persists_new_revisions_and_handles_missing_transcript(t
         with pytest.raises(HTTPException) as empty:
             await generate_meeting_report('empty')
         assert empty.value.status_code == 422
-        first, second = await asyncio.gather(generate_meeting_report('m'), generate_meeting_report('m'))
+        with pytest.raises(HTTPException) as unconfigured:
+            await generate_meeting_report('m')
+        assert unconfigured.value.status_code == 503
+        assert storage.list_report_revisions('m') == []
+        client = Client(json.dumps({'blocks': [{'type': 'bullet', 'text': 'Sales: 12 units', 'source_segment_ids': ['s']}]}))
+        monkeypatch.setattr(OpenAICompatibleClient, 'from_env', classmethod(lambda cls: client))
+        first = await generate_meeting_report('m')
+        second = await generate_meeting_report('m')
         assert {first.revision, second.revision} == {1, 2}
         listing = await list_reports('m')
         assert [r.revision for r in listing] == [1, 2]
@@ -76,21 +83,62 @@ def test_report_endpoint_persists_new_revisions_and_handles_missing_transcript(t
     storage.close()
 
 
-def test_repair_is_bounded_and_chinese_adjacent_numbers_are_checked():
-    class RepairClient:
-        def __init__(self, outputs): self.outputs, self.calls = iter(outputs), 0
-        def chat(self, **kwargs):
-            self.calls += 1
-            return next(self.outputs)
-
+def test_invalid_reports_never_trigger_hidden_paid_repairs():
     valid = json.dumps({'blocks': [{'type': 'timeline', 'title': '2026年', 'text': '2026年開始', 'source_segment_ids': ['s']}]}, ensure_ascii=False)
-    invalid = json.dumps({'blocks': [{'type': 'timeline', 'title': '2027年', 'text': '2027年開始', 'source_segment_ids': ['s']}]}, ensure_ascii=False)
-    client = RepairClient([invalid, valid])
+    client = Client(valid)
     doc = generate_report([segment('2026年開始')], language='zh', client=client)
-    assert client.calls == 2 and doc.generation_method == 'llm'
+    assert len(client.calls) == 1 and doc.generation_method == 'llm'
     assert doc.sections[0].title == '2026年' and doc.sections[0].layout_type == 'timeline'
-    assert doc.takeaways[0].source_segment_ids == ['s']
-    client = RepairClient([invalid, invalid])
-    doc = generate_report([segment('2026年開始')], language='zh', client=client)
-    assert client.calls == 2 and doc.generation_method == 'extractive'
-    assert doc.sections[0].blocks[0].text == '2026年開始'
+    assert client.calls[0]['response_schema']['properties']['blocks']['maxItems'] == 8
+    invalid = json.dumps({'blocks': [{'type': 'timeline', 'title': '2027年', 'text': '2027年開始', 'source_segment_ids': ['s']}]}, ensure_ascii=False)
+    for payload in (invalid, 'not JSON', ''):
+        client = Client(payload)
+        with pytest.raises(ReportGenerationError):
+            generate_report([segment('2026年開始')], language='zh', client=client)
+        assert len(client.calls) == 1
+
+
+def test_interactive_options_require_sources_and_supported_numbers():
+    block = {'type':'comparison', 'title':'Compare plans', 'text':'Discussed plans', 'source_segment_ids':['s'],
+             'options':[{'label':'Plan A','text':'12 units', 'source_segment_ids':['s']},
+                        {'label':'Plan B','text':'6 units', 'source_segment_ids':['s']}]}
+    client = Client(json.dumps({'blocks':[block]}))
+    doc = generate_report([segment('Plan A needs 12 units; Plan B needs 6 units.')], language='en', client=client)
+    assert doc.generation_method == 'llm'
+    assert [option.label for option in doc.sections[0].blocks[0].options] == ['Plan A', 'Plan B']
+    for invalid in ({'text':'99 units'}, {'source_segment_ids':['other']}, {'source_segment_ids':[]}):
+        bad = json.loads(json.dumps(block))
+        bad['options'][0].update(invalid)
+        with pytest.raises(ReportGenerationError):
+            generate_report([segment('Plan A needs 12 units; Plan B needs 6 units.')], language='en',
+                            client=Client(json.dumps({'blocks':[bad]})))
+
+
+def test_openrouter_report_endpoint_uses_configured_remote_client(tmp_path, monkeypatch):
+    from meetingbro import main
+    from meetingbro.resources.coordinator import InferenceCoordinator
+    storage = Storage(tmp_path / 'remote.sqlite')
+    storage.create_meeting('m'); storage.insert_segment(segment())
+    main.app.state.storage = storage
+    main.app.state.report_locks = {}
+    main.app.state.inference_coordinator = InferenceCoordinator()
+    client = Client(json.dumps({'blocks':[{'type':'conclusion','text':'12 units','source_segment_ids':['s']}]}))
+    monkeypatch.setenv('MEETINGBRO_LLM_BASE_URL', 'https://openrouter.ai/api/v1')
+    monkeypatch.setattr(main.OpenAICompatibleClient, 'from_env', classmethod(lambda cls: client))
+    report = asyncio.run(main.generate_meeting_report('m'))
+    assert client.calls and report.document.generation_method == 'llm'
+    assert storage.list_report_revisions('m')[0].document.sections[0].blocks[0].text == '12 units'
+    storage.close()
+
+
+def test_chinese_spoken_statistics_are_validated_without_requiring_arabic_digits():
+    evidence = '三十分鐘烤機，最高溫度四十七點八度。屏幕能激發一千八百尼特亮度。'
+    for text in ('三十分鐘烤機，最高四十七點八度。', '屏幕亮度一千八百尼特。'):
+        client = Client(json.dumps({'blocks': [{'type': 'statistic', 'text': text, 'source_segment_ids': ['s']}]}))
+        doc = generate_report([segment(evidence)], language='zh', client=client)
+        assert doc.generation_method == 'llm' and len(client.calls) == 1
+    for text in ('最高五十七點八度。', '屏幕亮度三千尼特。', '屏幕很亮。'):
+        client = Client(json.dumps({'blocks': [{'type': 'statistic', 'text': text, 'source_segment_ids': ['s']}]}))
+        with pytest.raises(ReportGenerationError):
+            generate_report([segment(evidence)], language='zh', client=client)
+        assert len(client.calls) == 1

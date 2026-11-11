@@ -24,6 +24,7 @@ async def wait_for_status(storage, status):
 
 
 class GoodSummary:
+    generation_method = 'llm'
     def finalize_meeting(self, segments, **kwargs):
         assert [s.id for s in segments] == ['segment']
         return {'final_summary': 'Agreed action.', 'chapters': [], 'action_items': []}
@@ -31,6 +32,7 @@ class GoodSummary:
 
 def test_final_job_failure_retry_and_atomic_snapshots(tmp_path):
     class Failing:
+        generation_method = 'llm'
         def finalize_meeting(self, segments, **kwargs):
             raise RuntimeError('offline')
     async def run():
@@ -62,6 +64,7 @@ def test_final_job_failure_retry_and_atomic_snapshots(tmp_path):
 
 def test_inflight_job_recovers_after_worker_restart(tmp_path):
     class SlowSummary:
+        generation_method = 'llm'
         started = threading.Event()
         release = threading.Event()
         def finalize_meeting(self, segments, **kwargs):
@@ -113,6 +116,7 @@ def test_session_finishes_while_slow_final_job_continues(tmp_path):
                                text='The agreed action is clear.', language='en', confidence=1)]
 
     class SlowSummary:
+        generation_method = 'llm'
         def __init__(self, started, release):
             self.started, self.release = started, release
         def finalize_meeting(self, segments, **kwargs):
@@ -281,4 +285,144 @@ def test_final_job_remains_queued_while_memory_is_low(tmp_path):
             await worker.close()
             await coordinator.close()
             storage.close()
+    asyncio.run(run())
+
+
+def test_final_job_atomically_saves_interactive_report_from_provider(tmp_path, monkeypatch):
+    import json
+    from meetingbro.jobs import final_summary
+    class Client:
+        def chat(self, **kwargs):
+            return json.dumps({'blocks':[{'type':'concept','title':'Agreed action','text':'An action was agreed.',
+                'source_segment_ids':['segment'], 'options':[{'label':'Action','text':'A transcript with an agreed action.',
+                                                             'source_segment_ids':['segment']}]}]})
+    monkeypatch.setattr(final_summary.OpenAICompatibleClient, 'from_env', classmethod(lambda cls: Client()))
+    async def run():
+        storage = Storage(tmp_path / 'rich.sqlite'); add_meeting(storage)
+        worker = FinalSummaryWorker(storage, GoodSummary); worker.start()
+        try:
+            await worker.enqueue('meeting', 'en')
+            await wait_for_status(storage, 'succeeded')
+            report = storage.list_report_revisions('meeting')[-1]
+            assert report.report_type == 'meeting'
+            assert report.document.sections[0].blocks[0].options[0].label == 'Action'
+            storage.delete_meeting('meeting')
+            assert storage.list_report_revisions('meeting') == []
+            assert storage.get_final_summary_job('meeting') is None
+            assert storage.list_segments('meeting') == []
+        finally:
+            await worker.close(); storage.close()
+    asyncio.run(run())
+
+
+def test_report_only_final_job_calls_model_once_and_exports_summary(tmp_path, monkeypatch):
+    import json
+    from pathlib import Path
+    from meetingbro.exporter import export_meeting
+    from meetingbro.jobs import final_summary
+    class Client:
+        calls = 0
+        def chat(self, **kwargs):
+            self.calls += 1
+            return json.dumps({'blocks': [{'type': 'conclusion', 'text': 'An action was agreed.', 'source_segment_ids': ['segment']}]})
+    client = Client()
+    monkeypatch.setattr(final_summary.OpenAICompatibleClient, 'from_env', classmethod(lambda cls: client))
+    def unused_factory(): raise AssertionError('Do not generate a second paid summary')
+    async def run():
+        db = Storage(tmp_path / 'single.sqlite')
+        add_meeting(db)
+        worker = FinalSummaryWorker(db, unused_factory, report_only=True)
+        worker.start()
+        try:
+            await worker.enqueue('meeting', 'en')
+            await wait_for_status(db, 'succeeded')
+            assert client.calls == 1
+            assert not db.list_snapshots('meeting')
+            reports = db.list_report_revisions('meeting')
+            assert len(reports) == 1 and reports[0].document.generation_method == 'llm'
+            result = export_meeting(db, meeting_id='meeting', export_root=tmp_path / 'exports')
+            assert {'meeting-report.html', 'summary.md'} <= set(result.files)
+            assert 'An action was agreed.' in (Path(result.export_dir) / 'summary.md').read_text()
+        finally:
+            await worker.close()
+            db.close()
+    asyncio.run(run())
+
+
+def test_opening_app_suspends_legacy_queued_jobs_until_explicit_retry(tmp_path):
+    db = Storage(tmp_path / 'legacy.sqlite')
+    add_meeting(db)
+    db.queue_final_summary('job', 'meeting', 'en', None)
+    db.suspend_pending_final_summary_jobs()
+    db.recover_final_summary_jobs()
+    assert db.claim_final_summary_job() is None
+    assert db.get_final_summary_job('meeting')['status'] == 'failed'
+    db.close()
+
+
+def test_stop_generates_one_final_report_after_flushing_transcript_even_with_live_disabled(tmp_path, monkeypatch):
+    import json
+    import numpy as np
+    from meetingbro.asr.base import ASRSegment
+    from meetingbro.audio.capture import AudioChunk, AudioSource
+    from meetingbro.jobs import final_summary
+    from meetingbro.session.manager import SessionConfig, SessionManager
+    from meetingbro.summarization.heuristic import HeuristicSummarizer
+    from meetingbro.translation.passthrough import PassthroughTranslator
+
+    class Source(AudioSource):
+        def __init__(self):
+            self.ready = asyncio.Event()
+            self.closed = asyncio.Event()
+        @property
+        def sample_rate(self): return 16000
+        async def stream(self):
+            samples = (np.sin(2*np.pi*440*np.arange(8000)/16000)*0.03).astype(np.float32)
+            yield AudioChunk(samples=samples, sample_rate=16000, start_time=0)
+            self.ready.set()
+            await self.closed.wait()
+        async def aclose(self): self.closed.set()
+    class ASR:
+        def transcribe(self, samples, sample_rate, **kwargs):
+            return [ASRSegment(start_time=0, end_time=0.5, text='Final tail discussed.', language='en', confidence=1)]
+    class Client:
+        calls = 0
+        def chat(self, **kwargs):
+            self.calls += 1
+            evidence = json.loads(kwargs['user'])
+            assert [item['text'] for item in evidence] == ['Final tail discussed.']
+            return json.dumps({'blocks': [{'text': 'Final tail discussed.', 'source_segment_ids': [evidence[0]['id']]}]})
+    client = Client()
+    monkeypatch.setattr(final_summary.OpenAICompatibleClient, 'from_env', classmethod(lambda cls: client))
+    async def run():
+        db = Storage(tmp_path / 'stop.sqlite')
+        worker = FinalSummaryWorker(db, lambda: None, report_only=True)
+        worker.start()
+        queued = []
+        async def enqueue(meeting_id, language, vocabulary):
+            queued.append(meeting_id)
+            assert db.list_segments(meeting_id)[-1].text == 'Final tail discussed.'
+            return await worker.enqueue(meeting_id, language, vocabulary)
+        source = Source()
+        cfg = SessionConfig(audio_source=source, asr=ASR(), storage=db,
+            summarizer=HeuristicSummarizer(), translator=PassthroughTranslator(),
+            pre_vad_enabled=False, fast_preview_enabled=False, asr_accumulation_seconds=30,
+            live_summaries_enabled=False, final_summary_enabled=True, enqueue_final_summary=enqueue)
+        manager = SessionManager(cfg)
+        try:
+            await manager.start()
+            await asyncio.wait_for(source.ready.wait(), 2)
+            assert client.calls == 0
+            await manager.stop(graceful=True)
+            await manager.stop(graceful=True)
+            async def until_done():
+                while db.get_final_summary_job(manager.meeting_id)['status'] not in ('succeeded', 'failed'):
+                    await asyncio.sleep(0.01)
+            await asyncio.wait_for(until_done(), 3)
+            assert db.get_final_summary_job(manager.meeting_id)['status'] == 'succeeded'
+            assert queued == [manager.meeting_id] and client.calls == 1
+        finally:
+            await manager.stop()
+            await worker.close()
+            db.close()
     asyncio.run(run())

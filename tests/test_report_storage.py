@@ -51,7 +51,7 @@ def test_report_export_escapes_untrusted_text(tmp_path):
     db = Storage(tmp_path / 'db.sqlite')
     db.create_meeting('one')
     report = ReportRevision(report_id='r', meeting_id='one', report_type='meeting', revision=1,
-                            document=ReportDocument(title='<script>alert(1)</script>',
+                            document=ReportDocument(generation_method='llm', title='<script>alert(1)</script>',
                                 takeaways=[ReportBlock(text='<img src=x onerror=alert(1)>')]),
                             created_at=datetime.now(timezone.utc))
     db.insert_report_revision(report)

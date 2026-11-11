@@ -1,0 +1,202 @@
+.recorder-settings {
+  --bg: #18211c;
+  --surface: #202d26;
+  --surface-strong: #25332c;
+  --border: #37473e;
+  --text: #e6efe9;
+  --muted: #a8b9ad;
+  --settings-accent: #5ad8af;
+  color-scheme: dark;
+  color: var(--text);
+  font: inherit;
+  position: fixed;
+  inset: 0 0 0 auto;
+  width: min(520px, 100%);
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 16px 0 0 16px;
+  box-shadow: -16px 0 48px #0005;
+  overflow: hidden;
+}
+
+.recorder-settings[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.recorder-settings::backdrop {
+  background: #080f0c8f;
+}
+
+.recorder-settings__header, .recorder-settings__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 24px;
+}
+
+.recorder-settings__header h2 {
+  margin: 0;
+  font-size: 21px;
+  line-height: 1.3;
+}
+
+.recorder-settings__close {
+  border: 0;
+  border-radius: 50%;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: var(--surface-strong);
+  color: var(--muted);
+  font: inherit;
+  font-size: 23px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.recorder-settings__tabs {
+  display: flex;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--border);
+  gap: 24px;
+}
+
+.recorder-settings__tabs button {
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  padding: 8px 1px 12px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.recorder-settings__tabs button[aria-selected="true"] {
+  color: var(--settings-accent);
+  border-bottom-color: currentColor;
+}
+
+.recorder-settings__panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 22px 24px;
+  scrollbar-color: #516358 var(--bg);
+}
+
+.recorder-settings .settings-section {
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+.recorder-settings .settings-section + .settings-section { margin-top: 16px; }
+.recorder-settings .settings-section h3 { margin-bottom: 12px; color: var(--text); }
+.recorder-settings p { line-height: 1.5; }
+
+.recorder-settings .settings-field {
+  gap: 6px;
+  margin: 12px 0;
+}
+
+.recorder-settings .settings-field > span { color: #c1d1c6; }
+
+.recorder-settings :is(select, input:not([type="checkbox"]), textarea) {
+  min-width: 0;
+  max-width: 100%;
+  color: var(--text);
+  background: #17231c;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 14px;
+}
+
+.recorder-settings input[type="checkbox"] {
+  accent-color: var(--settings-accent);
+  vertical-align: middle;
+  margin: 0 5px 1px 0;
+  width: 16px;
+  height: 16px;
+}
+
+.recorder-settings .settings-actions-inline { flex-wrap: wrap; margin-top: 10px; }
+.recorder-settings .settings-btn {
+  background: var(--surface-strong);
+  color: var(--text);
+  border: 1px solid #45594b;
+  border-radius: 8px;
+  padding: 8px 14px;
+}
+.recorder-settings .settings-btn--primary {
+  background: var(--settings-accent);
+  border-color: transparent;
+  color: #0e2b20;
+  white-space: nowrap;
+}
+
+.recorder-settings__footer {
+  padding-block: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.recorder-settings__footer > div {
+  display: grid;
+  gap: 4px;
+}
+
+.recorder-settings__footer .settings-hint { margin: 0; }
+.recorder-settings .settings-test.is-ok { color: var(--settings-accent); }
+.recorder-settings .settings-test.is-error { color: #ffaaa1; }
+.recorder-settings :is(button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--settings-accent);
+  outline-offset: 2px;
+}
+
+.recorder-settings .diagnostics-body { gap: 8px; }
+.recorder-settings .diagnostic-card {
+  padding: 12px;
+  gap: 5px;
+  background: var(--surface);
+  border-color: var(--border);
+  overflow-wrap: anywhere;
+}
+
+.recorder-settings .advice-card, .recorder-settings .advice-item { background: var(--surface-strong); }
+.recorder-settings :is(.diagnostic-label, .diagnostic-note, .advice-item span, .advice-item em) { color: var(--muted); }
+.recorder-settings :is(.advice-ok, .delay-ok, .gain-ok) { border-color: #357257; }
+.recorder-settings :is(.advice-warn, .delay-warn, .gain-warn) { border-color: #927642; }
+.recorder-settings :is(.advice-danger, .delay-danger, .gain-danger) { border-color: #92534a; }
+.recorder-settings .health-ok { color: #87e2b8; }
+.recorder-settings .health-warn { color: #e7c387; }
+.recorder-settings .health-danger { color: #f8aca2; }
+
+@media (max-width: 620px) {
+  .recorder-settings { border-radius: 0; }
+  .recorder-settings__header, .recorder-settings__footer, .recorder-settings__panel { padding: 14px; }
+  .recorder-settings__tabs { padding-inline: 14px; }
+  .recorder-settings .diagnostics-body { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .recorder-settings .advice-list { grid-template-columns: 1fr; }
+}
+.recorder-settings .recording-preferences button { background: var(--surface-strong); color: var(--text); border: 1px solid #45594b; border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+.recorder-settings { animation: settings-slide-in 180ms ease-out; }
+@keyframes settings-slide-in { from { transform: translateX(35px); opacity: .6; } to { transform: translateX(0); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .recorder-settings { animation: none; } }
+@media (min-width: 621px) {
+  .recording-preferences > .settings-section:first-child { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 12px; }
+  .recording-preferences > .settings-section:first-child > :is(h3, button, p) { grid-column: 1 / -1; }
+  .recorder-settings .recording-preferences > .settings-section:first-child .settings-field { margin: 0; }
+  .recording-preferences > .settings-section:first-child h3 { margin: 0; }
+}

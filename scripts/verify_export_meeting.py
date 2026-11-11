@@ -37,6 +37,7 @@ def main() -> int:
             storage.insert_snapshot(
                 SummarySnapshot(
                     id="sum-1",
+                    generation_method="llm",
                     meeting_id=meeting_id,
                     summary_type="cumulative_meeting_summary",
                     time_start=0.0,

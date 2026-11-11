@@ -22,7 +22,7 @@ class ASRSegment:
 
 
 class ASRAdapter(ABC):
-    """Implementations may be local (faster-whisper) or remote (cloud ASR).
+    """Local Qwen3 implementations share this interface across MLX and transformers.
 
     ``forced_language`` carries the user's explicit language choice. When
     ``None`` the adapter must auto-detect. The system supports zh / en / de as

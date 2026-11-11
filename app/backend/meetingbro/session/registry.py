@@ -25,6 +25,10 @@ class SessionRegistry:
         self._grace_seconds = grace_seconds
         self._expiry_tasks: set[asyncio.Task] = set()
 
+    def contains_meeting(self, meeting_id: str) -> bool:
+        return any(entry.manager is not None and entry.manager.meeting_id == meeting_id
+                   for entry in self._entries.values())
+
     def reserve(self, token: str, owner: Any) -> bool:
         if token in self._entries:
             return False

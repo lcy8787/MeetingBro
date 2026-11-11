@@ -89,14 +89,14 @@ class SessionConfig:
     silence_commit_min_confidence: float = 0.75
     silence_commit_min_duration_seconds: float = 0.6
     silence_rms_threshold: float = 0.002  # chunks below this RMS are skipped (~-54 dBFS); low enough to pass quiet loopback / soft speech
-    # Overlap tail prepended to next ASR window. DEFAULT 0.0 (disabled) — Whisper's
+    # Overlap tail prepended to next ASR window. DEFAULT 0.0 (disabled) — formal Qwen3's
     # internal VAD padding (~400 ms speech_pad_ms) handles boundary words on its own,
     # and any non-zero overlap interacts badly with that padding: VAD pads segment
     # starts backwards into the overlap zone and the filter then drops legitimate
     # speech. Set this >0 only if you have measured a specific boundary-truncation
     # problem the VAD padding does not cover.
     asr_overlap_seconds: float = 0.0
-    # Optional static vocabulary hint fed to Whisper as initial_prompt. Use this for
+    # Optional static vocabulary hint fed to formal Qwen3 as initial_prompt. Use this for
     # proper nouns, names, jargon — NEVER pass running transcript here, that re-creates
     # the conditioning loop hallucination this codebase explicitly defends against.
     vocabulary_hint: Optional[str] = None
@@ -159,20 +159,20 @@ class SessionConfig:
     fast_preview_max_backlog_seconds: float = 0.5
     fast_preview_max_asr_realtime_factor: float = 0.65
     fast_preview_min_rms: float = 0.002
-    # How long (seconds) a Qwen preview may go uncovered by Whisper before it
+    # How long (seconds) a Qwen preview may go uncovered by formal Qwen3 before it
     # is promoted live as a formal segment.  This is the "no missed sentences"
     # safety net for chatty meetings with no silence pauses.
     qwen_orphan_max_age_seconds: float = 2.0
-    # Softer startup protection: Qwen often emits useful text before Whisper has
+    # Softer startup protection: Qwen often emits useful text before formal Qwen3 has
     # produced the first formal segment. During the first few seconds, allow one
-    # earlier low-quality Qwen draft so the meeting opening is not lost; Whisper
+    # earlier low-quality Qwen draft so the meeting opening is not lost; formal Qwen3
     # still replaces the draft when it later covers the same time span.
     qwen_startup_draft_enabled: bool = True
     qwen_startup_draft_window_seconds: float = 20.0
     qwen_startup_draft_grace_seconds: float = 1.2
     # Before a stranded Qwen preview is promoted as a low-quality draft, try one
-    # small Whisper retry on the same time span.  This preserves Qwen's realtime
-    # responsiveness while letting Whisper close gaps when it can.
+    # small formal Qwen3 retry on the same time span.  This preserves Qwen's realtime
+    # responsiveness while letting formal Qwen3 close gaps when it can.
     qwen_targeted_retry_enabled: bool = True
     qwen_targeted_retry_margin_seconds: float = 0.35
     qwen_targeted_retry_max_audio_seconds: float = 5.0
@@ -223,7 +223,7 @@ class _State:
     elapsed_seconds: float = 0.0
     speakers: dict[str, Speaker] = field(default_factory=dict)  # label -> Speaker
     # Repetition guard: count consecutive emissions with identical text so we can
-    # detect Whisper conditioning-loop hallucinations and reset state.
+    # detect formal Qwen3 conditioning-loop hallucinations and reset state.
     last_emitted_text: str = ""
     repetition_streak: int = 0
     # Language vote stickiness (active only when forced_language is None / auto mode).
@@ -281,14 +281,14 @@ class _State:
     preview_unconfirmed_last_text: Optional[str] = None
     # Ring buffer of recent preview segments for alignment diagnostics (memory-only).
     recent_preview_segments: list = field(default_factory=list)
-    # Qwen previews that Whisper passed over without coverage, queued for promotion.
+    # Qwen previews that formal Qwen3 passed over without coverage, queued for promotion.
     qwen_orphan_queue: list = field(default_factory=list)
     # Latest end_time (session-absolute seconds) covered by a Qwen promotion.
-    # Used to prevent Whisper from re-emitting speech already promoted by Qwen.
+    # Used to prevent formal Qwen3 from re-emitting speech already promoted by Qwen.
     qwen_covered_until: Optional[float] = None
     # Map of segment_id → (start_time, end_time) for Qwen-promoted draft segments.
-    # When Whisper commits a segment that overlaps a draft, the draft is removed
-    # from the DB and a transcript_segment_removed event is emitted so Whisper's
+    # When formal Qwen3 commits a segment that overlaps a draft, the draft is removed
+    # from the DB and a transcript_segment_removed event is emitted so formal Qwen3's
     # higher-quality version takes its place in the frontend.
     qwen_committed_drafts: dict = field(default_factory=dict)
     qwen_startup_draft_promoted: bool = False
@@ -393,7 +393,7 @@ class SessionManager:
         labels: list[str] = []
         if formal_active:
             phase = self._state.asr_inflight_phase or "formal"
-            labels.append(f"Whisper {phase} on {formal_device}")
+            labels.append(f"Qwen3 {phase} on {formal_device}")
         if preview_active:
             backend = self._cfg.preview_asr_backend_name or "preview"
             labels.append(f"{backend} preview on {preview_device}")
@@ -1062,11 +1062,11 @@ class SessionManager:
 
     @staticmethod
     def _format_vocabulary_prompt(hint: Optional[str]) -> str:
-        """Format user vocabulary terms into a glossary-style Whisper prompt.
+        """Format user vocabulary terms into a glossary-style formal Qwen3 prompt.
 
         The vocabulary dock collects a separator-delimited list of names,
         acronyms, and project terms. Presenting them as a short glossary sentence
-        biases Whisper toward the spellings far more effectively than the raw
+        biases formal Qwen3 toward the spellings far more effectively than the raw
         delimited string (measured on the proper-noun benchmark fixture: WER
         0.19 -> 0.095, keyword recall 3/5 -> 5/5). If the hint is already free
         text with no separators it is passed through unchanged.
@@ -1080,13 +1080,13 @@ class SessionManager:
             return terms[0]
         return "Glossary: " + ", ".join(terms) + "."
 
-    def _build_whisper_prompt(self) -> Optional[str]:
+    def _build_asr_prompt(self) -> Optional[str]:
         """Combine static vocabulary hint with recent Qwen preview context.
 
-        Qwen's current preview is passed as Whisper's initial_prompt so Whisper
+        Qwen's current preview is passed as formal Qwen3's initial_prompt so formal Qwen3
         is biased toward the vocabulary and phrasing already heard — the main
         "1+1>2" synergy between the two engines.  The combined string is capped
-        at 200 characters to stay well within Whisper's ~224-token prompt budget.
+        at 200 characters to stay well within formal Qwen3's ~224-token prompt budget.
 
         IMPORTANT: only the *current* rolling preview is included, never an
         accumulating running transcript.  Accumulating context re-creates the
@@ -1157,10 +1157,10 @@ class SessionManager:
 
     async def _promote_time_stranded_previews(
         self,
-        whisper_retry: Optional[Callable[[TranscriptSegment], Awaitable[bool]]] = None,
+        formal_retry: Optional[Callable[[TranscriptSegment], Awaitable[bool]]] = None,
     ) -> None:
         """Live "no missed sentences" safety net: promote Qwen previews that are
-        older than ``qwen_orphan_max_age_seconds`` with no formal Whisper coverage.
+        older than ``qwen_orphan_max_age_seconds`` with no formal formal Qwen3 coverage.
 
         Called from fast_preview_loop on every tick so stranded previews surface
         within one interval of going stale, even in chatty meetings without
@@ -1223,8 +1223,8 @@ class SessionManager:
             if orphan.end_time <= covered_until + 0.1:
                 continue
 
-            if whisper_retry is not None:
-                recovered = await whisper_retry(orphan)
+            if formal_retry is not None:
+                recovered = await formal_retry(orphan)
                 if recovered:
                     if startup_active:
                         self._state.qwen_startup_draft_promoted = True
@@ -1264,7 +1264,7 @@ class SessionManager:
 
         Runs at silence boundaries and session end.  Only active when a
         dedicated preview ASR (Qwen) is configured, so it never fires when
-        Whisper is both the preview and formal engine (same-model duplication
+        formal Qwen3 is both the preview and formal engine (same-model duplication
         would be wrong).
         """
         if not self._state.qwen_orphan_queue:
@@ -1657,7 +1657,7 @@ class SessionManager:
                 else:
                     buf_start = selected[0].start_time
 
-                # Clip the front to the last formally committed Whisper position.
+                # Clip the front to the last formally committed formal Qwen3 position.
                 # Qwen re-decoding already-committed speech wastes compute and
                 # causes the preview to display the tail of the previous (already
                 # committed) sentence, making it look like a "previous sentence"
@@ -1715,7 +1715,7 @@ class SessionManager:
                 samples = np.concatenate(slices).astype(np.float32, copy=False)
                 return samples.copy(), sample_rate, actual_start
 
-            async def try_whisper_retry_for_qwen(orphan: TranscriptSegment) -> bool:
+            async def try_formal_retry_for_qwen(orphan: TranscriptSegment) -> bool:
                 if not self._cfg.qwen_targeted_retry_enabled:
                     self._state.qwen_targeted_retry_skipped += 1
                     self._state.qwen_targeted_retry_last_reason = "disabled"
@@ -1745,7 +1745,7 @@ class SessionManager:
                     return False
 
                 samples = audio_conditioner.process_samples(samples)
-                prompt = self._build_whisper_prompt()
+                prompt = self._build_asr_prompt()
                 effective_lang = self._cfg.forced_language or (
                     self._state.locked_language if self._cfg.language_lock_enabled else None
                 )
@@ -1825,7 +1825,7 @@ class SessionManager:
 
                 if not candidates:
                     self._state.qwen_targeted_retry_failed += 1
-                    self._state.qwen_targeted_retry_last_reason = "no_usable_whisper_text"
+                    self._state.qwen_targeted_retry_last_reason = "no_usable_formal_text"
                     return False
 
                 for seg in candidates:
@@ -1951,7 +1951,7 @@ class SessionManager:
                 accum_chunk_rms.clear()
                 accum_duration = 0.0
 
-                # Skip near-silent chunks to avoid Whisper hallucinations.
+                # Skip near-silent chunks to avoid formal Qwen3 hallucinations.
                 rms = float(np.sqrt(np.mean(merged ** 2)))
                 if rms < self._cfg.silence_rms_threshold:
                     logger.debug("chunk silent rms=%.5f, skipping ASR", rms)
@@ -1979,7 +1979,7 @@ class SessionManager:
                 extended = np.concatenate([overlap_buf, merged]) if len(overlap_buf) > 0 else merged
                 asr_buf_start = buf_start - overlap_duration
     
-                prompt = self._build_whisper_prompt()
+                prompt = self._build_asr_prompt()
                 effective_lang = self._cfg.forced_language or (
                     self._state.locked_language if self._cfg.language_lock_enabled else None
                 )
@@ -2006,7 +2006,7 @@ class SessionManager:
                     else (merged.copy() if overlap_frames > 0 else np.zeros(0, dtype=np.float32))
                 )
 
-                # Drop Whisper segments that fall entirely within a time region
+                # Drop formal Qwen3 segments that fall entirely within a time region
                 # already promoted by Qwen — prevents duplicate formal entries.
                 if self._state.qwen_covered_until is not None:
                     covered = self._state.qwen_covered_until
@@ -2017,7 +2017,7 @@ class SessionManager:
                     ]
                     if len(segments) < n_before:
                         logger.debug(
-                            "whisper_dedup: dropped %d segment(s) already covered by Qwen (covered_until=%.2f)",
+                            "formal_dedup: dropped %d segment(s) already covered by Qwen (covered_until=%.2f)",
                             n_before - len(segments),
                             covered,
                         )
@@ -2189,7 +2189,7 @@ class SessionManager:
                         overlap_duration = len(overlap_buf) / sample_rate
                         extended = np.concatenate([overlap_buf, merged]) if len(overlap_buf) > 0 else merged
                         asr_buf_start = accum_start_time - overlap_duration
-                        prompt = self._build_whisper_prompt()
+                        prompt = self._build_asr_prompt()
                         effective_lang = self._cfg.forced_language or (
                             self._state.locked_language if self._cfg.language_lock_enabled else None
                         )
@@ -2337,9 +2337,9 @@ class SessionManager:
                             self._state.fast_preview_skip_reason = "formal ASR overload protection"
                             self._state.fast_preview_skipped += 1
                             continue
-                        # When Qwen has its own executor the formal-Whisper RTF is
+                        # When Qwen has its own executor the formal-formal Qwen3 RTF is
                         # irrelevant to preview throughput — they run on separate
-                        # thread pools.  Only gate on Whisper RTF when preview
+                        # thread pools.  Only gate on formal Qwen3 RTF when preview
                         # shares the same executor (no dedicated preview ASR).
                         if not self._has_dedicated_preview_asr():
                             formal_rtf = self._state.asr_realtime_factor
@@ -2405,9 +2405,9 @@ class SessionManager:
                             await self._emit_transcript_preview(seg)
 
                         # Safety net: promote any Qwen previews that are too old
-                        # without formal Whisper coverage ("no missed sentences").
+                        # without formal formal Qwen3 coverage ("no missed sentences").
                         await self._promote_time_stranded_previews(
-                            whisper_retry=try_whisper_retry_for_qwen,
+                            formal_retry=try_formal_retry_for_qwen,
                         )
                 except asyncio.CancelledError:
                     raise
@@ -2428,6 +2428,8 @@ class SessionManager:
                             self._state.first_chunk_wall_time = now
                         self._state.last_chunk_wall_time = now
                         chunk_rms = float(np.sqrt(np.mean(raw_chunk.samples ** 2))) if raw_chunk.samples.size else 0.0
+                        from ..audio.level import audio_level
+                        await self._emit("audio_level", audio_level(raw_chunk.samples))
                         if chunk_rms >= self._cfg.silence_rms_threshold:
                             self._state.last_voiced_chunk_wall_time = now
                             await self._recover_watchdog_episode(
@@ -3244,11 +3246,11 @@ class SessionManager:
         ):
             signal_count += 1
         # Structural duration/density heuristics intentionally removed.
-        # Whisper's own three signals (no_speech_prob, avg_logprob, compression_ratio)
+        # formal Qwen3's own three signals (no_speech_prob, avg_logprob, compression_ratio)
         # are the model's built-in hallucination detectors and are authoritative for
         # all languages.  Duration/density rules misfired on:
         #   - Short English/German words ("yesterday", "Bundestag") at fast speech rates
-        #   - Any segment where Whisper under-reports timestamp duration (common)
+        #   - Any segment where formal Qwen3 under-reports timestamp duration (common)
         #   - Normal CJK speech (one character ≈ one syllable, density looks high)
         # Removing them reduces false drops across EN / DE / ZH equally.
 
@@ -3388,11 +3390,11 @@ class SessionManager:
             emitted_at_elapsed_seconds=seg.emitted_at_elapsed_seconds,
         )
 
-    async def _whisper_replaces_qwen_drafts(self, whisper_seg: TranscriptSegment) -> None:
-        """Remove Qwen-draft segments that overlap with an incoming Whisper segment.
+    async def _formal_replaces_qwen_drafts(self, formal_seg: TranscriptSegment) -> None:
+        """Remove Qwen-draft segments that overlap with an incoming formal Qwen3 segment.
 
         Qwen fast-promotes segments as quality="low" placeholders so the user
-        sees text quickly.  When Whisper commits the same time region its output
+        sees text quickly.  When formal Qwen3 commits the same time region its output
         is preferred: the draft is deleted from the DB and a
         ``transcript_segment_removed`` event lets the frontend swap it out.
         """
@@ -3401,7 +3403,7 @@ class SessionManager:
         to_remove = [
             seg_id
             for seg_id, (s, e) in self._state.qwen_committed_drafts.items()
-            if s < whisper_seg.end_time and e > whisper_seg.start_time
+            if s < formal_seg.end_time and e > formal_seg.start_time
         ]
         if not to_remove:
             return
@@ -3415,8 +3417,8 @@ class SessionManager:
             )
             logger.info(
                 "qwen_draft_replaced [%.2f-%.2f] removed_draft=%s",
-                whisper_seg.start_time,
-                whisper_seg.end_time,
+                formal_seg.start_time,
+                formal_seg.end_time,
                 seg_id[:8],
             )
 
@@ -3436,18 +3438,18 @@ class SessionManager:
         self._state.fast_preview_revision = 0
         self._state.fast_preview_generation += 1
         if not is_qwen_draft:
-            await self._whisper_replaces_qwen_drafts(seg)
+            await self._formal_replaces_qwen_drafts(seg)
         self._state.segments.append(seg)
         self._cfg.storage.insert_segment(seg)
         self._state.last_emitted_text = seg.text.strip()
-        # Only the formal Whisper commit advances the clip boundary used by
+        # Only the formal formal Qwen3 commit advances the clip boundary used by
         # snapshot_recent_audio().  Qwen-draft promotions must NOT move it:
         # that would cause the next preview window to start at the draft's
         # end_time, making short post-commit windows and stale-suppression false
         # positives that produce the "previous sentence still showing" bug.
         if not is_qwen_draft:
             self._state.last_emitted_end_time = seg.end_time
-        # Clear the fast-preview overlay whenever Whisper formally commits any
+        # Clear the fast-preview overlay whenever formal Qwen3 formally commits any
         # segment whose time range overlaps the current preview.  The previous
         # condition (preview.end_time <= commit.end_time + 0.1) was too narrow:
         # it left previews showing already-committed content when the preview's
@@ -3706,7 +3708,7 @@ class SessionManager:
         previews = previews[-8:]
         lines = [
             "Fusion context for producing a clean conversation record.",
-            "Compare Whisper/formal transcript and Qwen/preview hints case by case.",
+            "Compare formal Qwen3/formal transcript and Qwen/preview hints case by case.",
             "Do not assume either engine is globally better; choose the locally more plausible wording from timing, language, overlap, and context.",
             "If neither source is reliable, keep the safer wording and mark the conflict as low confidence.",
             f"Preview alignment compared: {self._state.preview_alignment_compared}",
@@ -3725,7 +3727,7 @@ class SessionManager:
         return "\n".join(lines)
 
     async def _maybe_emit_llm_error(self) -> None:
-        """Surface a silent LLM fallback to the UI, once per distinct error."""
+        """Surface unavailable model summaries to the UI, once per distinct error."""
         last_error = getattr(self._cfg.summarizer, "last_error", None)
         if last_error == self._last_summary_error_emitted:
             return
@@ -3736,8 +3738,8 @@ class SessionManager:
                 ErrorPayload(
                     code="llm_unavailable",
                     message=(
-                        "AI summaries fell back to offline mode "
-                        f"(LLM error: {last_error}). Open Settings to check your API key."
+                        "No AI summary was generated; only the transcript is available. "
+                        f"(LLM error: {last_error}). Open Settings to check your summary model."
                     ),
                 ),
             )
@@ -3792,7 +3794,7 @@ class SessionManager:
         else:
             content = await loop.run_in_executor(self._summary_executor, summarize)
         await self._maybe_emit_llm_error()
-        if not content:
+        if not content or not content.strip() or getattr(self._cfg.summarizer, 'generation_method', 'unknown') != 'llm':
             return None
         snap = SummarySnapshot(
             id=str(uuid.uuid4()),
@@ -3802,6 +3804,7 @@ class SessionManager:
             time_end=time_end,
             language=self._cfg.summary_language,
             content=content,
+            generation_method='llm',
             source_segment_ids=[s.id for s in segments],
             is_latest=True,
             created_at=datetime.now(tz=timezone.utc),
@@ -3980,6 +3983,8 @@ class SessionManager:
             self._state.refinement_in_flight = False
 
     async def _emit_final(self) -> None:
+        if getattr(self._cfg.summarizer, 'generation_method', 'unknown') != 'llm':
+            return
         if self._state.retry_windows_total > 0:
             logger.info(
                 "retry summary total=%d improved=%d unchanged=%d diverged=%d",
@@ -4061,6 +4066,7 @@ class SessionManager:
                 time_end=end,
                 language=self._cfg.summary_language,
                 content=content,
+                generation_method='llm',
                 source_segment_ids=source_segment_ids,
                 is_latest=True,
                 created_at=datetime.now(tz=timezone.utc),

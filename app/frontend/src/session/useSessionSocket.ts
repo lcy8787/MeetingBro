@@ -97,6 +97,7 @@ export interface SessionView {
   sessionStartedAt: string | null;
   elapsedSeconds: number;
   sessionStats: SessionStatePayload | null;
+  audioLevel: number;
   segments: TranscriptSegment[];
   previewSegment: TranscriptSegment | null;
   previewSegments: TranscriptSegment[];
@@ -127,6 +128,7 @@ export function useSessionSocket(options: SessionOptions = {}): SessionView {
   const [meetingId, setMeetingId] = useState<string | null>(null);
   const [sessionStartedAt, setSessionStartedAt] = useState<string | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [audioLevel, setAudioLevel] = useState(0);
   const [sessionStats, setSessionStats] = useState<SessionStatePayload | null>(null);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [previewSegment, setPreviewSegment] = useState<TranscriptSegment | null>(null);
@@ -511,6 +513,9 @@ export function useSessionSocket(options: SessionOptions = {}): SessionView {
         try {
           const msg = JSON.parse(ev.data) as SessionEvent;
           switch (msg.type) {
+            case "audio_level":
+              setAudioLevel(msg.payload.level);
+              break;
             case "session_sync": {
               const snapshot = msg.payload;
               setLastError(null);
@@ -522,15 +527,15 @@ export function useSessionSocket(options: SessionOptions = {}): SessionView {
               committedIdsRef.current = new Set(snapshot.segments.map((segment) => segment.id));
               setSegments(snapshot.segments);
               setNotes(snapshot.notes);
-              setLiveReport(snapshot.report);
+              setLiveReport(snapshot.report?.document.generation_method === "llm" ? snapshot.report : null);
               setLatestByType(() => {
                 const latest: SessionView["latestByType"] = {};
-                for (const item of snapshot.snapshots) latest[item.summary_type] = item;
+                for (const item of snapshot.snapshots) if (item.generation_method === "llm") latest[item.summary_type] = item;
                 return latest;
               });
               setHistoryByType(() => {
                 const history: SessionView["historyByType"] = {};
-                for (const item of snapshot.snapshots) history[item.summary_type] = [...(history[item.summary_type] ?? []), item];
+                for (const item of snapshot.snapshots) if (item.generation_method === "llm") history[item.summary_type] = [...(history[item.summary_type] ?? []), item];
                 return history;
               });
               clearQueuedPreview();
@@ -606,6 +611,7 @@ export function useSessionSocket(options: SessionOptions = {}): SessionView {
               schedulePreviewUpdate(msg.payload.segment);
               break;
             case "summary_snapshot":
+              if (msg.payload.generation_method !== "llm") break;
               setLatestByType((prev) => ({
                 ...prev,
                 [msg.payload.summary_type]: msg.payload,
@@ -622,6 +628,7 @@ export function useSessionSocket(options: SessionOptions = {}): SessionView {
               });
               break;
             case "report_revision":
+              if (msg.payload.document.generation_method !== "llm") break;
               setLiveReport((previous) => !previous || previous.report_id !== msg.payload.report_id || msg.payload.revision > previous.revision ? msg.payload : previous);
               break;
             case "final_summary_job":
@@ -818,10 +825,10 @@ export function useSessionSocket(options: SessionOptions = {}): SessionView {
           setSegments(segments);
           setLatestByType((current) => {
             const next = { ...current };
-            for (const snapshot of snapshots) next[snapshot.summary_type] = snapshot;
+            for (const snapshot of snapshots) if (snapshot.generation_method === "llm") next[snapshot.summary_type] = snapshot;
             return next;
           });
-          const report = reports.filter((item) => item.report_type === "live").at(-1);
+          const report = reports.filter((item) => item.document.generation_method === "llm").sort((a, b) => a.created_at.localeCompare(b.created_at)).at(-1);
           if (report) setLiveReport(report);
         }
         if (!cancelled) setFinalJob(job);
@@ -839,6 +846,7 @@ export function useSessionSocket(options: SessionOptions = {}): SessionView {
     sessionStartedAt,
     elapsedSeconds,
     sessionStats,
+    audioLevel,
     segments,
     previewSegment,
     previewSegments,

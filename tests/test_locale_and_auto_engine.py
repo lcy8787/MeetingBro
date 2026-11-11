@@ -10,38 +10,28 @@ from meetingbro.schemas import TranscriptSegment
 from meetingbro.summarization.heuristic import HeuristicSummarizer
 
 
-def test_auto_selects_apple_engine_and_small_without_loading_or_downloading(monkeypatch):
-    monkeypatch.setattr(factory, '_mlx_available', lambda: False)
-    for key in ("ENGINE", "DEVICE", "SIZE"):
-        monkeypatch.setenv(f"MEETINGBRO_WHISPER_{key}", "auto")
-    constructor = Mock()
-    monkeypatch.setattr(factory, "WhisperCppAdapter", constructor)
-    profile = HardwareProfile(cpu_count=6, ctranslate2_cuda_available=False,
-                              apple_metal_available=True, whisper_cpp_available=True,
-                              recommended_whisper_engine="whisper-cpp",
-                              recommended_whisper_size="small")
-    adapter, engine, device, _ = factory.build_formal_asr(profile)
-    assert (engine, device) == ("whisper-cpp", "metal")
-    assert constructor.call_args.kwargs["model_size"] == "small"
-    adapter.ensure_loaded.assert_not_called()
-
-
-def test_auto_prefers_local_qwen_when_installed_but_explicit_whisper_remains_available(monkeypatch, tmp_path):
-    for name in ('config.json', 'vocab.json', 'merges.txt', 'weights.safetensors'):
-        (tmp_path / name).touch()
-    monkeypatch.setattr(factory.platform, 'system', lambda: 'Darwin')
-    monkeypatch.setattr(factory.platform, 'machine', lambda: 'arm64')
-    monkeypatch.setattr(factory.importlib.util, 'find_spec', lambda name: object())
-    monkeypatch.setenv('MEETINGBRO_QWEN3_MLX_MODEL', str(tmp_path))
-    monkeypatch.setenv('MEETINGBRO_WHISPER_ENGINE', 'auto')
-    profile = HardwareProfile(cpu_count=8, ctranslate2_cuda_available=False)
+@pytest.mark.parametrize("size", ["0.6B", "1.7B"])
+def test_apple_uses_selected_qwen_without_loading_or_downloading(monkeypatch, size):
+    monkeypatch.setattr(factory.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(factory.platform, "machine", lambda: "arm64")
+    monkeypatch.setenv("MEETINGBRO_QWEN3_MODEL_SIZE", size)
+    monkeypatch.delenv("MEETINGBRO_QWEN3_MLX_MODEL", raising=False)
+    monkeypatch.setenv("MEETINGBRO_WHISPER_ENGINE", "faster-whisper")
+    profile = HardwareProfile(cpu_count=6, apple_metal_available=True)
     adapter, engine, device, compute = factory.build_formal_asr(profile)
-    assert (engine, device, compute) == ('qwen3-mlx', 'metal', 'mlx')
+    assert (engine, device, compute) == ("qwen3-mlx", "metal", "mlx")
+    assert adapter.model_path.name == f"Qwen3-ASR-{size}-4bit"
     assert adapter._session is None
-    monkeypatch.setenv('MEETINGBRO_WHISPER_ENGINE', 'faster-whisper')
-    monkeypatch.setattr(factory, 'FasterWhisperAdapter', Mock())
-    _, engine, _, _ = factory.build_formal_asr(profile)
-    assert engine == 'faster-whisper'
+
+
+def test_other_platform_uses_qwen_and_invalid_size_is_rejected(monkeypatch):
+    monkeypatch.setattr(factory.platform, "system", lambda: "Linux")
+    monkeypatch.setenv("MEETINGBRO_QWEN3_MODEL_SIZE", "1.7B")
+    adapter, engine, device, _ = factory.build_formal_asr(HardwareProfile(cpu_count=8, cuda_available=True))
+    assert (engine, device) == ("qwen3", "cuda")
+    assert adapter.model_path.name == "Qwen3-ASR-1.7B" and adapter._model is None
+    monkeypatch.setenv("MEETINGBRO_QWEN3_MODEL_SIZE", "1.6B")
+    with pytest.raises(ValueError): factory.build_formal_asr(HardwareProfile(cpu_count=8))
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Uses the built-in macOS script converter")

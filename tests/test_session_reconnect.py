@@ -144,11 +144,11 @@ def test_initial_connection_disconnect_and_reattach_keep_same_session(tmp_path, 
         from meetingbro.resources.coordinator import InferenceCoordinator
         app.state.inference_coordinator = InferenceCoordinator()
         app.state.asr = ASR()
-        app.state.hardware_profile = HardwareProfile(cpu_count=8, ctranslate2_cuda_available=False)
+        app.state.hardware_profile = HardwareProfile(cpu_count=8, cuda_available=False)
         app.state.preview_asr = None
         app.state.preview_asr_backend_name = 'shared'
         app.state.formal_asr_device = 'cpu'
-        app.state.whisper_engine = 'faster-whisper'
+        app.state.asr_engine = 'qwen3'
         class Worker:
             async def enqueue(self, *args): return {}
         app.state.final_summary_worker = Worker()

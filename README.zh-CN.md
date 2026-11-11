@@ -25,7 +25,7 @@ MeetingBro 能够监听你的会议内容，实时将语音转录为文字，自
 
 | 功能 | 说明 |
 |---|---|
-| **实时转录** | 基于 Whisper 的本地实时语音转文字，数据不上传 |
+| **实时转录** | 基于 Qwen3-ASR 的本地实时语音转文字，数据不上传 |
 | **实时字幕** | 可选中 / 英 / 德实时翻译字幕 |
 | **实时翻译** | 中、英、德三语自动互译 |
 | **滚动纪要** | AI 自动生成近 3–5 分钟内容的滚动摘要，实时刷新 |
@@ -56,7 +56,7 @@ MeetingBro 能够监听你的会议内容，实时将语音转录为文字，自
 - 安装过程需要在终端（命令行）中执行少量命令，下方提供了一步一步的指引。
 - **Windows 是目前体验最完善的平台。** Windows 上可直接捕获系统音频（扬声器输出），因此能自动兼容任意会议软件。
 - **macOS 和 Linux** 支持麦克风捕获。如需在线会议的系统音频捕获，需要额外配置：macOS 需安装 BlackHole 虚拟声卡并创建 Multi-Output Device；Linux 需配置 PulseAudio/PipeWire loopback。
-- **Whisper 模型会在首次运行时自动下载。** `small` 模型约 460 MB，仅需下载一次，永久保存本地。
+- **录音前请安装 Qwen3-ASR 模型。** 支持 0.6B 和 1.7B，实时预览与正式逐字稿共用所选模型。
 - **MeetingBro 提供三种运行模式**：`仅摘要`（适合低配设备）、`均衡`（推荐大多数用户）、`高性能`（适合高配设备，追求更强实时性）。
 - **识别语言与运行模式相互独立。** 若会议为单一语言，可固定语言以获得更精准的识别；多语言会议建议设为 `自动检测`。
 - **Qwen3 预览模型为可选高级配置**（约 700 MB）。建议普通用户先不安装，仅在需要独立快速预览通道的高配设备上启用。
@@ -99,7 +99,7 @@ chmod +x scripts/install.sh scripts/start.sh
 桌面应用现在让非技术用户可以完全在界面里完成配置：
 
 - **自动管理后端** —— Electron 应用会自动启动（并在退出时关闭）Python 后端。在后端启动、以及首次运行下载语音模型期间，会显示"正在启动 / 正在准备语音模型"提示界面，而不是空白窗口；若启动失败，界面会显示错误并提供 **重试 / 查看日志**。（若已有后端在运行，应用会直接接入，不会重复启动。）
-- **应用内设置（顶栏 ⚙）** —— 设置 **LLM API Key / Base URL / 模型**(带 **测试连接** 按钮)、**Whisper 模型大小** 与 **计算设备**、以及快速字幕预览后端。设置按用户保存，并在无录制会话时自动重启后端生效,无需手改 `.env`。
+- **应用内设置（顶栏 ⚙）** —— 设置 **LLM API Key / Base URL / 模型**(带 **测试连接** 按钮)、**Qwen3-ASR 模型大小（0.6B / 1.7B）**。设置按用户保存，并在无录制会话时自动重启后端生效,无需手改 `.env`。
 - **音频设备选择** —— 在采集选择器旁直接选择具体的麦克风或系统输出设备。
 - **清晰反馈** —— 当 AI 摘要静默降级(例如 API Key 被拒)时,会出现提示横幅并可一键跳转设置。
 
@@ -244,30 +244,23 @@ copy .env.example .env
 
 用任意文本编辑器打开 `.env` 文件。默认配置无需修改即可运行；如需 AI 摘要功能，可添加 LLM Key（参见下方的 [LLM 配置](#llm-配置-ai-摘要)）。
 
-### 步骤 5 ——（可选高级）下载 Qwen3 预览模型
+### 步骤 5 —— 安装 Qwen3-ASR 模型
 
-此步骤可选，普通使用无需执行。仅当你需要在高配设备上测试独立快速预览通道时才需要。
-
-```bash
-pip install sherpa-onnx
-pip install huggingface_hub
-
-huggingface-cli download csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25 --local-dir models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25
-```
-
-如果 `huggingface-cli` 不在 PATH 中，可使用：
+Apple Silicon 从项目根目录执行：
 
 ```bash
-python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25', local_dir='models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25')"
+./scripts/install_qwen3_mlx.sh 0.6B
+./scripts/install_qwen3_mlx.sh 1.7B
 ```
 
-模型约 700 MB，仅需下载一次。
+其他平台安装后端时使用 `pip install -e ".[qwen]"`，然后下载本地模型：
 
-如不需要此预览模型，可跳过本步骤。如需强制将预览通道回退到纯 Whisper 模式，可在 `.env` 中添加：
-
-```env
-MEETINGBRO_PREVIEW_ASR_BACKEND=whisper
+```bash
+hf download Qwen/Qwen3-ASR-0.6B --local-dir models/Qwen3-ASR-0.6B
+hf download Qwen/Qwen3-ASR-1.7B --local-dir models/Qwen3-ASR-1.7B
 ```
+
+在设置中选择已安装的版本；不再提供独立预览引擎或其他识别引擎回退。
 
 ### 步骤 6 —— 安装前端
 
@@ -302,7 +295,7 @@ MEETINGBRO_LLM_MODEL=gpt-4o-mini
 
 → **各提供商的完整配置方法请参见 [docs/llm-providers.md](docs/llm-providers.md)。**
 
-> **隐私说明：** 只有文本转录稿会被发送到你配置的 LLM 提供商。音频捕获和 Whisper 转录全程在本地运行。若使用 Ollama 等本地 LLM，数据完全不会离开你的设备。
+> **隐私说明：** 只有文本转录稿会被发送到你配置的 LLM 提供商。音频捕获和 Qwen3-ASR 转录全程在本地运行。若使用 Ollama 等本地 LLM，数据完全不会离开你的设备。
 
 ---
 
@@ -356,7 +349,7 @@ Electron 窗口会自动打开。若未自动打开，可在浏览器中访问 `
 - **均衡** —— 如果你希望获得标准体验
 - **高性能** —— 如果你的设备性能强劲，想要最激进的实时效果
 
-若 Whisper 模型是首次使用，第一次转录可能需要 10–30 秒用于模型加载。后续转录会更快。
+若 Qwen3-ASR 模型是首次使用，第一次转录可能需要 10–30 秒用于模型加载。后续转录会更快。
 
 ---
 
@@ -367,7 +360,7 @@ MeetingBro 从你的电脑捕获音频，并通过本地流水线处理：
 ```
 音频来源（麦克风或系统音频）
     ↓ 语音活动检测 (VAD)
-    ↓ Whisper 语音识别
+    ↓ Qwen3-ASR 语音识别
     ↓ 可选预览通道（仅高级配置）
     ↓ 说话人分离（可选）
     ↓ 翻译（可选，通过 LLM）
@@ -376,7 +369,9 @@ MeetingBro 从你的电脑捕获音频，并通过本地流水线处理：
     ↓ 导出（Markdown 文件）
 ```
 
-默认配置下，Whisper 是主引擎。可选的 Qwen3 预览通道不再建议普通设备使用。
+Qwen3-ASR 是唯一识别引擎。摘要页左上方可手动「产生摘要」，或开启默认关闭的自动摘要：首次每 5 分钟检查，成功产生首份摘要后，每 10 分钟在逐字稿有更新时生成。停止录音后，会在逐字稿保存完成时自动生成一次最终摘要，不受定时开关影响；调用模型可能产生 API 费用。请求失败会关闭定时更新。
+
+只有经模型成功整理并验证的结果才会显示或导出为互动 HTML；未配置模型或生成失败时，只提供 `transcript.md` 和 `metadata.json`（如有手写笔记，另行保留），隐藏旧的离线摘录。模型成功生成后才增加 `summary.md` 和 `meeting-report.html`。互动报告支持选项按钮、流程、待办勾选和原文来源展开。设置中选择 OpenRouter 并填写 API Key 和模型 ID 后，可用它生成摘要。历史记录支持右键删除，并在删除前提示无法恢复。
 
 两种音频捕获模式：
 

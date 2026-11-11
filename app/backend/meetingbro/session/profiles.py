@@ -8,7 +8,7 @@ RUNTIME_PROFILE_NAMES = {"balanced", "performance", "summary_only"}
 
 
 RUNTIME_PROFILE_PRESETS: dict[str, dict[str, Any]] = {
-    # Whisper-only meeting mode with live captions and full summaries.
+    # Qwen3 meeting mode with live captions and full summaries.
     # Tuned for stability over speed.
     "balanced": {
         "resource_governor_policy": "balanced",
@@ -36,12 +36,10 @@ RUNTIME_PROFILE_PRESETS: dict[str, dict[str, Any]] = {
         "weak_speech_rescue_fast_window_seconds": 3.0,
         "rolling_window_seconds": 300.0,
         "summary_tail_seconds": 300.0,
-        # Live preview captions (Qwen lane) give ~1s captions vs ~5s for the
-        # formal lane (measured, CPU). Degrades gracefully to a shared preview
-        # when the optional Qwen model is not installed.
+        # Live captions reuse the selected local Qwen3 model.
         "fast_preview_enabled": True,
     },
-    # Performance mode: Whisper + Qwen preview lane for faster live captions
+    # Performance mode: Shared Qwen3 preview and final lane for faster live captions
     # and dual-source context for refined clean notes.
     "performance": {
         "resource_governor_policy": "balanced",

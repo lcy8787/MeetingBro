@@ -9,7 +9,6 @@ from typing import Sequence
 from ..llm import OpenAICompatibleClient
 from ..schemas import LanguageCode, TranscriptSegment
 from .base import Summarizer, SummaryKind
-from .heuristic import HeuristicSummarizer
 
 logger = logging.getLogger(__name__)
 
@@ -57,11 +56,11 @@ _PROMPTS = {
     ),
     "refined_transcript": (
         "You are producing a clean conversation record for an ongoing meeting in {language}. "
-        "You may receive evidence from both Whisper formal transcript segments and "
-        "Qwen preview hints. Do NOT assume either engine is always better: decide "
+        "You may receive formal Qwen3 transcript segments and draft Qwen3 preview hints. "
+        "Prefer the confirmed transcript; assess any draft additions "
         "case by case from timestamps, overlap, language consistency, surrounding "
-        "context, and plausibility. If Qwen is more plausible for a local phrase, "
-        "use it; if Whisper is more plausible, use Whisper; if they conflict and "
+        "context, and plausibility. If a draft fills a clear gap, preserve it with "
+        "an uncertainty marker. If the formal and draft versions conflict and "
         "neither is clearly reliable, keep the safer wording and mark the issue "
         "as uncertain. Never invent facts, speakers, decisions, names, or timestamps. "
         "Preserve the meeting's mixed Chinese, English, and German content. This is "
@@ -127,19 +126,19 @@ class LLMSummarizer(Summarizer):
     LongCat, set ``LONGCAT_API_KEY``; the default endpoint/model are:
     ``https://api.longcat.chat/openai`` and ``LongCat-Flash-Chat``.
 
-    Falls back to the heuristic summarizer otherwise, so the pipeline always
-    produces transcript-driven output.
+    Publishes content only after a successful model call. Missing or failed
+    providers leave the transcript available without fabricating summaries.
     """
 
-    def __init__(self, *, fallback: Summarizer | None = None) -> None:
-        self._fallback = fallback or HeuristicSummarizer()
+    generation_method = "llm"
+
+    def __init__(self) -> None:
         self._anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
         self._openai_key = os.environ.get("OPENAI_API_KEY")
         self._anthropic_client = None
         self._openai_client = None
         self._compatible_client = OpenAICompatibleClient.from_env()
-        # Set to the most recent provider error when an LLM call fell back to the
-        # heuristic summarizer; None after a successful call. The SessionManager
+        # Set to the most recent provider error; None after a successful call. The SessionManager
         # reads this to surface a visible (deduped) warning to the UI.
         self.last_error: str | None = None
 
@@ -181,13 +180,8 @@ class LLMSummarizer(Summarizer):
             return ""
         provider = self._ensure_client()
         if provider is None:
-            return self._fallback.summarize(
-                segments,
-                kind=kind,
-                language=language,
-                previous_summary=previous_summary,
-                vocabulary=vocabulary,
-            )
+            self.last_error = "No summary model is configured"
+            return ""
 
         transcript_text = "\n".join(
             f"[{s.start_time:.1f}-{s.end_time:.1f}] {s.text}" for s in segments
@@ -246,15 +240,9 @@ class LLMSummarizer(Summarizer):
                 )
                 return (resp.choices[0].message.content or "").strip()
         except Exception as exc:
-            logger.warning("LLM summarization failed, falling back: %s", exc)
+            logger.warning("LLM summarization failed; no summary published: %s", exc)
             self.last_error = str(exc)
-            return self._fallback.summarize(
-                segments,
-                kind=kind,
-                language=language,
-                previous_summary=previous_summary,
-                vocabulary=vocabulary,
-            )
+            return ""
 
     def _complete_final(self, provider: str, *, system: str, user: str, max_tokens: int) -> str:
         """Call the selected provider without silent heuristic fallback."""
@@ -323,12 +311,7 @@ class LLMSummarizer(Summarizer):
             return {"chapters": [], "action_items": [], "final_summary": ""}
         provider = self._ensure_client()
         if provider is None:
-            return self._fallback.finalize_meeting(
-                segments,
-                language=language,
-                vocabulary=vocabulary,
-                meeting_memory=meeting_memory,
-            )
+            raise RuntimeError("No summary model is configured")
         batches = _transcript_batches(segments)
         if not batches:
             return {"chapters": [], "action_items": [], "final_summary": ""}

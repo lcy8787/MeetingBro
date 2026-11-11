@@ -47,7 +47,11 @@ fi
 source .venv/bin/activate
 
 python -m pip install --upgrade pip
-pip install -e .
+if [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]]; then
+    pip install -e '.[mlx]'
+else
+    pip install -e '.[qwen]'
+fi
 
 if [ ! -f ".env" ]; then
     if [ -f "${REPO_ROOT}/.env.example" ]; then

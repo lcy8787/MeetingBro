@@ -10,7 +10,7 @@ Supported sources for the MVP vertical slice:
   deterministic end-to-end vertical-slice test and for dev without a real mic.
 
 Both sources yield fixed-duration ``AudioChunk`` objects of mono ``float32`` PCM
-at a configurable sample rate (default 16 kHz to match Whisper).
+at a configurable sample rate (default 16 kHz to match Qwen3).
 """
 from __future__ import annotations
 

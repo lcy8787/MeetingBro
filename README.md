@@ -25,7 +25,7 @@ Platform support: Windows, macOS, and Linux.
 
 | Feature | Details |
 |---|---|
-| **Live transcription** | Real-time speech-to-text using Whisper, running locally on your machine |
+| **Live transcription** | Real-time speech-to-text using Qwen3-ASR, running locally on your machine |
 | **Live subtitles** | Optional translated subtitles for Chinese, English, and German |
 | **Live translation** | Automatic translation between Chinese, English, and German |
 | **Rolling summary** | AI-generated summary of the last 3–5 minutes, refreshes automatically |
@@ -37,7 +37,7 @@ Platform support: Windows, macOS, and Linux.
 | **Microphone capture** | Works on Windows, macOS, and Linux (in-person meetings) |
 | **Local or cloud LLM** | Use OpenAI, Groq, Ollama, or any OpenAI-compatible API for summaries |
 
-> **No API key is required to use transcription.** Summaries fall back to local heuristics if no LLM is configured.
+> **No API key is required to use transcription.** Without a configured summary model, only transcripts are shown and exported.
 
 ---
 
@@ -58,10 +58,10 @@ Platform support: Windows, macOS, and Linux.
 - You will need to type a few commands in a terminal (command prompt). The instructions are step-by-step.
 - **Windows is the easiest platform** right now. On Windows, MeetingBro can capture system audio (everything your speakers play), so it works with any meeting platform automatically.
 - On **macOS and Linux**, microphone capture works. For online meetings, system audio capture is supported with the right setup: macOS uses a virtual loopback device plus a Multi-Output Device, and Linux uses PulseAudio/PipeWire loopback.
-- **Whisper models download automatically on first run.** The `small` model is about 460 MB. This happens once and is saved to your disk.
+- **Install a Qwen3-ASR model before recording.** Choose 0.6B for lower resource use or 1.7B for higher accuracy. Both preview and final transcription share that model.
 - **MeetingBro has three runtime modes**: `Summary only` for weaker devices, `Balanced` for most laptops/desktops, and `Performance` for stronger machines that can trade more compute for more aggressive realtime behavior.
 - **Speech language is separate from runtime mode.** Set `Speech = Auto` for mixed-language meetings; set a specific speech language when the meeting stays in one language and you want tighter recognition.
-- **Fast live captions work out of the box.** On capable machines the `whisper-streaming` preview lane shows captions in ~1.5 s (vs several seconds for the full segment) using the Whisper model you already have — no extra download. These live captions trade a little accuracy for speed and are corrected by the main transcript.
+- **Live captions reuse the selected Qwen model.** There is no separate preview engine or Whisper fallback.
 - **The Qwen3 preview model is optional advanced setup** (about 700 MB) and is *not* required for fast captions (streaming covers that). Most users should start without it; it's an alternative preview backend for those who specifically want it.
 - **An LLM API key is optional.** Without one, transcription still works perfectly. You only need a key for AI-generated summaries and translation. Some providers such as Groq or OpenRouter may offer a free tier — check their current pricing pages.
 
@@ -97,26 +97,23 @@ Press `Ctrl+C` in the terminal to stop both services together.
 
 ### Qwen3-ASR on Apple Silicon
 
-After the normal backend installation, install the optional local Qwen3-ASR
-engine and its 0.6B model:
+Install the local MLX model after installing the backend:
 
 ```bash
-./scripts/install_qwen3_mlx.sh
+./scripts/install_qwen3_mlx.sh 0.6B
+./scripts/install_qwen3_mlx.sh 1.7B
 ```
 
-The installer downloads the Apache-2.0
-[`moona3k/mlx-qwen3-asr-0.6b-4bit`](https://huggingface.co/moona3k/mlx-qwen3-asr-0.6b-4bit)
-checkpoint (about 538 MB) into `models/Qwen3-ASR-0.6B-4bit`; its text
-decoder uses 4-bit weights and its audio encoder uses 8-bit weights. Restart
-MeetingBro after installation. On Apple Silicon, **Auto** selects the local
-Qwen3 MLX engine when the package and complete model files are present. The
-desktop Settings menu can also explicitly select Qwen3 MLX or a Whisper
-fallback. Transcription uses the local model and does not require a network
-connection; downloading the package and model requires network access.
+These install the compatible `moona3k/mlx-qwen3-asr-0.6b-4bit` (about 538 MB)
+and `moona3k/mlx-qwen3-asr-1.7b-4bit` (about 1.2 GB) checkpoints into separate
+local directories. In **Settings → Models → Qwen3-ASR**, select **0.6B** or
+**1.7B** and save. Both live preview and final transcription use the selected
+model. Apple Silicon uses MLX; other platforms use the local `qwen-asr` backend.
+Model loading never silently falls back to another engine.
 
-To use a different compatible local model directory, set
-`MEETINGBRO_QWEN3_MLX_MODEL` before starting the backend. If the model cannot
-be loaded, check the backend log and select a Whisper engine in Settings.
+For a custom local model directory, set `MEETINGBRO_QWEN3_MLX_MODEL` on Apple
+Silicon or `MEETINGBRO_QWEN3_MODEL` elsewhere. This explicit path overrides the
+size-based default directory. Install complete files before starting the app.
 
 > **Port note:** MeetingBro backend listens on **8765** by default. The scripts let you override this with the `BACKEND_PORT` environment variable, but the frontend code also defaults to 8765. Unless you intentionally change the frontend configuration, leave `BACKEND_PORT` unchanged.
 
@@ -124,10 +121,10 @@ be loaded, check the backend log and select a Whisper engine in Settings.
 
 The desktop app is designed so a non-technical user can set everything up from the UI:
 
-- **Automatic backend** — the Electron app starts (and stops) the Python backend for you. While it warms up — including the first-run speech-model download — you see a "Starting / Preparing the speech model" screen instead of a blank window. If the backend can't start, the screen shows the error with **Retry** and **View log**. (If a backend is already running, the app attaches to it instead of launching a second one.)
-- **In-app Settings (⚙ in the header)** — set your **LLM API key / base URL / model** (with a **Test connection** button), the **Whisper model size** and **compute device**, and the fast-captions preview backend. Settings are saved per-user and applied by restarting the backend automatically (only when no session is recording). No `.env` editing required.
-- **Audio device picker** — choose the exact microphone or system-output device next to the Capture selector.
-- **Clear feedback** — if AI summaries silently fall back (e.g. a rejected API key), a banner tells you and links straight to Settings.
+- **Automatic backend** — the Electron app starts (and stops) the Python backend for you. While it warms up — including local speech-model loading — you see a "Starting / Preparing the speech model" screen instead of a blank window. If the backend can't start, the screen shows the error with **Retry** and **View log**. (If a backend is already running, the app attaches to it instead of launching a second one.)
+- **In-app Settings (⚙ in the header)** — set your **LLM API key / base URL / model** (with a **Test connection** button), the **Qwen3-ASR model size (0.6B / 1.7B)**. Settings are saved per-user and applied by restarting the backend automatically (only when no session is recording). No `.env` editing required.
+- **Audio device picker and level meter** — choose the microphone or system-output device and check its live input level before recording. The main recording page also shows the input level.
+- **Clear feedback** — if summary generation fails (e.g. a rejected API key), no substitute report is published and the UI links to Settings.
 
 > The in-app backend launcher uses `app/backend/.venv`, which **must be a Python 3.12+ environment** (run `scripts/install.ps1` / `install.sh` with Python 3.12 to create it). If your `.venv` was created with an older Python, recreate it, or simply start the backend yourself (e.g. in your own env) and the app will attach to it.
 
@@ -236,7 +233,10 @@ You will need to run `conda activate MeetingBro` every time you open a new termi
 
 ```bash
 cd app/backend
-pip install -e "."
+# Apple Silicon
+pip install -e ".[mlx]"
+# Windows / Linux / Intel Mac
+pip install -e ".[qwen]"
 ```
 
 **Windows only** — install the WASAPI loopback helper library:
@@ -270,33 +270,17 @@ copy .env.example .env
 
 Open `.env` in any text editor. The defaults work without changes, but if you want AI summaries, add your LLM key (see [LLM setup](#llm-setup-for-ai-summaries) below).
 
-### Step 5 — (Optional advanced) Download the Qwen3 preview model
+### Step 5 — Install the selected speech model
 
-This step is optional and not required for normal use. Start without it unless you are specifically testing the dedicated fast-preview path on a stronger machine.
-
-```bash
-pip install sherpa-onnx
-pip install huggingface_hub
-
-huggingface-cli download csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25 --local-dir models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25
-```
-
-If `huggingface-cli` is not on your PATH, use:
+On Apple Silicon, run the installer above from the project root. On other platforms:
 
 ```bash
-python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25', local_dir='models/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25')"
+hf download Qwen/Qwen3-ASR-0.6B --local-dir models/Qwen3-ASR-0.6B
+hf download Qwen/Qwen3-ASR-1.7B --local-dir models/Qwen3-ASR-1.7B
 ```
 
-The model is about 700 MB and downloads once.
-
-If you do not want the extra preview model, skip this step — fast live captions still work via the default `whisper-streaming` lane (no download). To pin the preview backend explicitly, set one of these in your `.env`:
-
-```env
-# whisper-streaming = fast captions reusing the main Whisper model (default when no Qwen model is present)
-# qwen3             = use the optional Qwen3 model downloaded above
-# whisper           = a dedicated Whisper preview model
-MEETINGBRO_PREVIEW_ASR_BACKEND=whisper-streaming
-```
+Select the installed size in Settings or set `MEETINGBRO_QWEN3_MODEL_SIZE=0.6B`
+(or `1.7B`) for terminal startup. Only these two sizes are accepted.
 
 ### Step 6 — Install the frontend
 
@@ -315,7 +299,7 @@ MeetingBro uses an **optional** cloud or local LLM for:
 - AI meeting summaries (Rolling Summary and Meeting Board)
 - Translation between Chinese, English, and German
 
-**Without a key:** transcription still works. Summaries fall back to keyword extraction.
+**Without a summary model:** transcription still works; no summaries or report HTML are published. Local Ollama can provide summaries without a cloud API key.
 
 **With a key:** the easiest way is the in-app **Settings (⚙)** panel — paste your key, pick a provider preset, and click **Test connection**. Or set these three lines in your `.env` file:
 
@@ -329,7 +313,7 @@ Supported providers include **OpenAI, Groq, Mistral AI, OpenRouter, Together AI*
 
 → **See [docs/llm-providers.md](docs/llm-providers.md) for full setup instructions for each provider.**
 
-> **Privacy note:** Only the text transcript is sent to the LLM provider you configure. Audio capture and Whisper transcription run entirely on your machine. If you use a local LLM such as Ollama, no data leaves your device at all.
+> **Privacy note:** Only the text transcript is sent to the LLM provider you configure. Audio capture and Qwen3 transcription run entirely on your machine. If you use a local LLM such as Ollama, no data leaves your device at all.
 
 ---
 
@@ -388,7 +372,7 @@ Before your first real meeting, choose a mode that matches your device:
 - **Balanced** if you want the standard experience.
 - **Performance** if your machine is strong and you want the heaviest realtime setup.
 
-If the Whisper model hasn't been used before, the first transcription may take 10–30 seconds while the model loads. Subsequent transcriptions are faster.
+If the Qwen3 model hasn't been used before, the first transcription may take 10–30 seconds while the model loads. Subsequent transcriptions are faster.
 
 ---
 
@@ -399,16 +383,36 @@ MeetingBro captures audio from your computer and processes it through a local pi
 ```
 Audio source (mic or system audio)
     ↓ Voice Activity Detection (VAD)
-    ↓ Whisper ASR  (authoritative transcript)
-    ↓ Streaming preview lane (fast live captions; whisper-streaming by default, or Qwen3)
+    ↓ Qwen3-ASR 0.6B or 1.7B (shared preview + final transcription)
     ↓ Speaker diarization (optional)
     ↓ Translation (optional, via LLM)
     ↓ Summarization (optional, via LLM)
     ↓ Live UI (transcript + summaries)
-    ↓ Export (Markdown files)
+    ↓ Export (standalone interactive HTML + Markdown/JSON)
 ```
 
-In the default setup, Whisper is the main (authoritative) engine. Fast live captions come from a **streaming preview lane** that re-decodes the growing audio window and commits a stable prefix (LocalAgreement) — by default this reuses the same Whisper model (`whisper-streaming`, no extra download); the optional Qwen3 model is an alternative preview backend. The main Whisper transcript always corrects the preview.
+Qwen3-ASR is the only speech engine. After recording, the configured summary
+provider generates a validated structured report, rendered as one interactive
+HTML summary. Use **Settings → Models → OpenRouter**, enter an API key and
+model ID, then **Test connection** and **Save & apply**. Cloud providers receive
+the text transcript; speech recognition remains local. No cloud call is made
+when the provider is unconfigured.
+
+The summary supports topic navigation, comparison/concept buttons that reveal
+explanations, ordered flows, checkable actions, and expandable transcript sources.
+These controls also work in the exported standalone HTML. Checkbox state lasts
+for the current view; it is not a task synchronization service. Existing records
+can use **Generate summary** at the top left of the summary page to generate a new report.
+Periodic summaries are off by default: turn on **Automatically generate summaries**
+to check every 5 minutes until the first successful summary, then every 10 minutes
+when the transcript changes. **Stopping a recording always queues one final summary**
+after its transcript is saved, independently of the periodic switch. These model
+requests may incur provider charges. Failed requests disable periodic generation.
+Without a successful model result, exports contain only `transcript.md` and
+`metadata.json` (plus user-authored notes, if any); legacy extracts are hidden.
+After successful generation, exports also include `summary.md` and `meeting-report.html`.
+Right-click a history item to delete it; a confirmation warns that deletion
+cannot be undone. Exported files remain independent copies.
 
 Two audio capture modes:
 
@@ -479,7 +483,7 @@ See **[CONTRIBUTING.md](CONTRIBUTING.md)** for how to set up a development envir
 
 Add these topics to the repository on GitHub for discoverability:
 
-`meeting-assistant` `speech-to-text` `live-transcription` `transcription` `ai-summary` `live-translation` `whisper` `local-ai` `offline-first` `privacy` `electron` `fastapi` `python` `multilingual` `open-source`
+`meeting-assistant` `speech-to-text` `live-transcription` `transcription` `ai-summary` `live-translation` `qwen3-asr` `local-ai` `offline-first` `privacy` `electron` `fastapi` `python` `multilingual` `open-source`
 
 ---
 

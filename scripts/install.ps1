@@ -56,7 +56,7 @@ $venvPip    = Join-Path $backendDir ".venv\Scripts\pip.exe"
 & $venvPython -m pip install --upgrade pip
 if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
 
-& $venvPip install -e .
+& $venvPip install -e ".[qwen]"
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
 if (-not (Test-Path ".env")) {
