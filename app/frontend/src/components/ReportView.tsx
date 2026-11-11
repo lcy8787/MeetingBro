@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-const t = (text: string, ...values: Array<string | number>) => text.replace(/\{(\d+)\}/g, (_, i) => String(values[Number(i)] ?? ""));
+import { t } from "../i18n";
 import type { ReportBlock, ReportRevision, TranscriptSegment } from "../types";
 
 interface Props {
@@ -47,7 +47,7 @@ export function ReportView({ report, transcript }: Props) {
       <div className="report-controls">
         <button type="button" onClick={() => setPresentation(!presentation)}>{presentation ? t("Reading mode") : t("Presentation mode")}</button>
         {presentation && <button type="button" onClick={() => { void root.current?.requestFullscreen?.().catch(() => setMessage(t("Full screen unavailable"))); }}>{t("Full screen")}</button>}
-        <button type="button" onClick={() => void copy([doc.title, ...doc.sections.map((_, i) => sectionText(i))].join("\n\n"))}>{t("Copy report")}</button>
+        <button type="button" onClick={() => void copy([doc.title, doc.executive_summary, ...doc.takeaways.map((block) => [block.title, block.text, block.detail].filter(Boolean).join("\n")), ...doc.sections.map((_, i) => sectionText(i))].filter(Boolean).join("\n\n"))}>{t("Copy report")}</button>
         <span role="status" aria-live="polite">{message}</span>
       </div>
       {doc.takeaways.length > 0 && <div className="report-grid">{doc.takeaways.map((block, i) => <Block key={i} block={block} sources={sources} />)}</div>}

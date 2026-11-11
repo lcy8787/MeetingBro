@@ -36,6 +36,7 @@ from ..schemas import (
 )
 from ..storage.db import Storage
 from ..reports.live import update_live_report
+from ..resources.coordinator import InferenceCoordinator
 from ..summarization.base import Summarizer
 from ..translation.base import Translator
 
@@ -49,8 +50,13 @@ class SessionConfig:
     summarizer: Summarizer
     translator: Translator
     storage: Storage
+    enqueue_final_summary: Optional[Callable[[str, str, Optional[str]], Awaitable[dict]]] = None
+    live_summaries_enabled: bool = True
+    final_summary_enabled: bool = True
+    inference_coordinator: Optional[InferenceCoordinator] = None
     preview_asr: Optional[ASRAdapter] = None
     preview_asr_backend_name: str = "unknown"
+    reuse_formal_preview_identity: bool = False
     hardware_profile_label: str = "unknown"
     hardware_summary: Optional[str] = None
     formal_asr_device: str = "cpu"
@@ -63,7 +69,7 @@ class SessionConfig:
     runtime_profile: str = "balanced"
     diarizer: Optional[Diarizer] = None
     forced_language: Optional[str] = None  # None => auto-detect
-    summary_language: LanguageCode = "en"
+    summary_language: LanguageCode = "zh"
     live_translation_language: Optional[LanguageCode] = None
     rolling_window_seconds: float = 180.0  # last ~3 minutes for rolling summary input
     rolling_interval_seconds: float = 60.0  # cadence target for rolling refresh
@@ -77,6 +83,7 @@ class SessionConfig:
     min_segments_for_cumulative: int = 3
     min_segments_for_refinement: int = 2
     asr_accumulation_seconds: float = 2.0  # was 2.5; benchmark showed equal char-count at lower latency
+    formal_incremental_commit: bool = False
     asr_early_flush_enabled: bool = True
     asr_early_flush_min_seconds: float = 0.8
     silence_commit_min_confidence: float = 0.75
@@ -187,11 +194,18 @@ class SessionConfig:
 class SessionEvent:
     type: str
     payload: dict
+    sequence: int = 0
+
+
+@dataclass
+class _PauseBoundary:
+    completed: asyncio.Future[None]
 
 
 @dataclass
 class _State:
     meeting_id: str
+    transcript_sequence: int = 0
     segments: list[TranscriptSegment] = field(default_factory=list)
     last_rolling_at: float = 0.0
     last_rolling_end_time: float = 0.0  # transcript end_time of the last segment included in the previous rolling summary
@@ -246,6 +260,7 @@ class _State:
     fast_preview_attempts: int = 0
     fast_preview_emitted: int = 0
     fast_preview_skipped: int = 0
+    fast_preview_skip_reason: Optional[str] = None
     fast_preview_last_audio_seconds: Optional[float] = None
     fast_preview_last_wall_seconds: Optional[float] = None
     fast_preview_realtime_factor: Optional[float] = None
@@ -253,6 +268,9 @@ class _State:
     snapshot_concat_wall_seconds: Optional[float] = None
     fast_preview_inflight: bool = False
     fast_preview_segment: Optional[TranscriptSegment] = None
+    fast_preview_id: Optional[str] = None
+    fast_preview_revision: int = 0
+    fast_preview_generation: int = 0
     preview_continued_during_formal: int = 0
     last_emitted_end_time: Optional[float] = None
     preview_stale_suppressed: int = 0
@@ -310,13 +328,18 @@ class SessionManager:
         # Same, for live-translation failures (e.g. rejected key while subtitles on).
         self._last_translation_error_emitted: Optional[str] = None
         self._event_queue: asyncio.Queue[SessionEvent] = asyncio.Queue(maxsize=1024)
+        self._event_sequence = 0
         self._state = _State(meeting_id=str(uuid.uuid4()))
         self._stopped = asyncio.Event()
         self._pause_gate = asyncio.Event()
         self._pause_gate.set()
+        self._pause_transition = asyncio.Lock()
+        self._capture_queue: Optional[asyncio.Queue[AudioChunk | _PauseBoundary | None]] = None
+        self._capture_queue_closed: Optional[asyncio.Event] = None
         self._task: Optional[asyncio.Task[None]] = None
         self._watchdog_task: Optional[asyncio.Task[None]] = None
         self._summary_tasks: set[asyncio.Task[None]] = set()
+        self._summary_tasks_by_kind: dict[str, asyncio.Task[None]] = {}
         self._translation_tasks: set[asyncio.Task[None]] = set()
         self._translation_task_order: list[asyncio.Task[None]] = []
         self._translation_in_flight: set[tuple[str, str]] = set()
@@ -365,8 +388,8 @@ class SessionManager:
         preview_device = (self._cfg.preview_asr_device or "cpu").lower()
         formal_active = self._state.asr_inflight_start_wall_time is not None
         preview_active = self._state.fast_preview_inflight
-        gpu_active = (formal_active and formal_device == "cuda") or (preview_active and preview_device == "cuda")
-        cpu_active = (formal_active and formal_device != "cuda") or (preview_active and preview_device != "cuda")
+        gpu_active = (formal_active and formal_device in {"cuda", "metal"}) or (preview_active and preview_device in {"cuda", "metal"})
+        cpu_active = (formal_active and formal_device not in {"cuda", "metal"}) or (preview_active and preview_device not in {"cuda", "metal"})
         labels: list[str] = []
         if formal_active:
             phase = self._state.asr_inflight_phase or "formal"
@@ -399,14 +422,14 @@ class SessionManager:
             compute_cpu_active=compute_cpu_active,
             compute_cpu_available=True,
             compute_cpu_configured=(
-                (self._cfg.formal_asr_device or "cpu").lower() != "cuda"
-                or (self._cfg.preview_asr_device or "cpu").lower() != "cuda"
+                (self._cfg.formal_asr_device or "cpu").lower() not in {"cuda", "metal"}
+                or (self._cfg.preview_asr_device or "cpu").lower() not in {"cuda", "metal"}
             ),
             compute_gpu_active=compute_gpu_active,
             compute_gpu_available=self._cfg.compute_gpu_available,
             compute_gpu_configured=(
-                (self._cfg.formal_asr_device or "cpu").lower() == "cuda"
-                or (self._cfg.preview_asr_device or "cpu").lower() == "cuda"
+                (self._cfg.formal_asr_device or "cpu").lower() in {"cuda", "metal"}
+                or (self._cfg.preview_asr_device or "cpu").lower() in {"cuda", "metal"}
             ),
             compute_activity_label=compute_activity_label,
             audio_chunk_seconds=self._cfg.audio_chunk_seconds,
@@ -432,6 +455,8 @@ class SessionManager:
             weak_rescue_emitted=self._state.weak_rescue_emitted,
             weak_rescue_buffer_seconds=self._state.weak_rescue_buffer_seconds,
             summary_pending_count=sum(1 for task in self._summary_tasks if not task.done()),
+            inference_memory_free_percent=(self._cfg.inference_coordinator.memory_free_percent if self._cfg.inference_coordinator else None),
+            inference_defer_reason=(self._cfg.inference_coordinator.waiting_reason() if self._cfg.inference_coordinator else None),
             translation_pending_count=sum(1 for task in self._translation_task_order if not task.done()),
             translation_backlog_trim_total=self._state.translation_backlog_trim_total,
             audio_drop_total=self._audio_drop_total,
@@ -443,6 +468,7 @@ class SessionManager:
             fast_preview_attempts=self._state.fast_preview_attempts,
             fast_preview_emitted=self._state.fast_preview_emitted,
             fast_preview_skipped=self._state.fast_preview_skipped,
+            fast_preview_skip_reason=self._state.fast_preview_skip_reason,
             fast_preview_last_audio_seconds=self._state.fast_preview_last_audio_seconds,
             fast_preview_last_wall_seconds=self._state.fast_preview_last_wall_seconds,
             fast_preview_realtime_factor=self._state.fast_preview_realtime_factor,
@@ -620,6 +646,9 @@ class SessionManager:
         if chunk_seconds is not None:
             self._cfg.audio_chunk_seconds = chunk_seconds
         self._audio_source_generation += 1
+        self._state.fast_preview_generation += 1
+        self._state.fast_preview_id = None
+        self._state.fast_preview_revision = 0
         self._reset_watchdog_tracking()
         self._clear_preview_candidate()
         self._state.fast_preview_segment = None
@@ -631,19 +660,45 @@ class SessionManager:
         asyncio.create_task(self._emit("session_state", self._session_state_payload(state=self._active_state_name())))
 
     async def pause(self) -> None:
+        async with self._pause_transition:
+            await self._pause_locked()
+
+    async def _pause_locked(self) -> None:
         if self._stopped.is_set() or not self._pause_gate.is_set():
             return
         self._pause_gate.clear()
-        self._state.pending_segments.clear()
-        self._state.fast_preview_segment = None
-        self._clear_preview_candidate()
+        self._state.fast_preview_id = None
+        self._state.fast_preview_revision = 0
+        self._state.fast_preview_generation += 1
         await self._emit_transcript_preview()
         await self._emit(
             "session_state",
             self._session_state_payload(state="paused"),
         )
+        queue = self._capture_queue
+        closed = self._capture_queue_closed
+        task = self._task
+        if queue is not None and closed is not None and task is not None and not task.done():
+            boundary = _PauseBoundary(asyncio.get_running_loop().create_future())
+            put = asyncio.create_task(queue.put(boundary))
+            closed_wait = asyncio.create_task(closed.wait())
+            try:
+                done, _ = await asyncio.wait({put, task, closed_wait}, return_when=asyncio.FIRST_COMPLETED)
+                if put not in done:
+                    return
+                await asyncio.wait({boundary.completed, task, closed_wait}, return_when=asyncio.FIRST_COMPLETED)
+                if boundary.completed.done():
+                    boundary.completed.result()
+            finally:
+                if not put.done():
+                    put.cancel()
+                closed_wait.cancel()
 
     async def resume(self) -> None:
+        async with self._pause_transition:
+            await self._resume_locked()
+
+    async def _resume_locked(self) -> None:
         if self._stopped.is_set() or self._pause_gate.is_set():
             return
         self._pause_gate.set()
@@ -667,7 +722,7 @@ class SessionManager:
             return
 
     async def events(self) -> AsyncIterator[SessionEvent]:
-        while not (self._stopped.is_set() and self._event_queue.empty()):
+        while not (self._stopped.is_set() and (self._task is None or self._task.done()) and self._event_queue.empty()):
             try:
                 ev = await asyncio.wait_for(self._event_queue.get(), timeout=0.5)
             except asyncio.TimeoutError:
@@ -715,7 +770,8 @@ class SessionManager:
             if hasattr(payload_model, "model_dump")
             else dict(payload_model)
         )
-        event = SessionEvent(type=event_type, payload=payload)
+        self._event_sequence += 1
+        event = SessionEvent(type=event_type, payload=payload, sequence=self._event_sequence)
         if self._event_queue.full():
             if event_type in self._CRITICAL_EVENT_TYPES:
                 self._drop_one_queued_noncritical_event()
@@ -755,6 +811,8 @@ class SessionManager:
             self._state.meeting_id,
             preferred_summary_language=self._cfg.summary_language,
         )
+        if self._cfg.inference_coordinator is not None:
+            self._cfg.inference_coordinator.register(self)
         await self._emit(
             "session_state",
             self._session_state_payload(state="running"),
@@ -784,6 +842,10 @@ class SessionManager:
                     self._STOP_TASK_TIMEOUT_SECONDS,
                 )
                 self._task.cancel()
+                if graceful and self._cfg.final_summary_enabled and self._cfg.enqueue_final_summary is not None:
+                    self._cfg.storage.record_incomplete_audio_job(
+                        str(uuid.uuid4()), self._state.meeting_id, self._cfg.summary_language, self._cfg.vocabulary_hint)
+                await self._emit("error", ErrorPayload(code="audio_flush_timeout", message="Audio processing timed out before finalization; the final summary was not queued."))
         await self._drain_background_tasks(
             self._summary_tasks,
             timeout=self._STOP_SUMMARY_WAIT_SECONDS,
@@ -795,6 +857,8 @@ class SessionManager:
             label="translation",
         )
         self._cfg.storage.end_meeting(self._state.meeting_id)
+        if self._cfg.inference_coordinator is not None:
+            self._cfg.inference_coordinator.unregister(self)
         self._shutdown_executors()
         await self._emit(
             "session_state",
@@ -1788,22 +1852,6 @@ class SessionManager:
                 weak_rescue_duration = 0.0
                 self._state.weak_rescue_buffer_seconds = 0.0
 
-            def drop_live_buffers() -> None:
-                nonlocal accum_duration, accum_start_time, overlap_buf, pre_vad, recent_audio_duration
-                accum_samples.clear()
-                accum_chunk_rms.clear()
-                accum_duration = 0.0
-                accum_start_time = 0.0
-                overlap_buf = np.zeros(0, dtype=np.float32)
-                pre_vad = make_pre_vad_segmenter()
-                clear_weak_rescue_buffer()
-                recent_audio_chunks.clear()
-                recent_audio_duration = 0.0
-                self._state.fast_preview_segment = None
-                # Clear pending Qwen drafts — they belong to the previous source
-                # and Whisper will never cover them on the new source.
-                self._state.qwen_committed_drafts.clear()
-
             async def maybe_rescue_weak_speech(
                 *,
                 energy_chunk: AudioChunk,
@@ -2049,11 +2097,11 @@ class SessionManager:
                 candidate_segments = await self._reconcile_preview_candidate(candidate_segments)
     
                 tail_segment = None
-                if candidate_segments and not self._is_sentence_complete(candidate_segments[-1].text):
+                if not self._cfg.formal_incremental_commit and candidate_segments and not self._is_sentence_complete(candidate_segments[-1].text):
                     tail_segment = candidate_segments.pop()
     
                 preview_complete_segment = None
-                if candidate_segments and tail_segment is None:
+                if not self._cfg.formal_incremental_commit and candidate_segments and tail_segment is None:
                     preview_complete_segment = candidate_segments.pop()
 
                 for seg in candidate_segments:
@@ -2116,232 +2164,8 @@ class SessionManager:
                 self._schedule_summary(self._maybe_emit_cumulative())
                 self._schedule_summary(self._maybe_emit_refined_transcript())
 
-            queue_chunk_seconds = max(0.05, self._cfg.audio_chunk_seconds)
-            audio_queue_maxsize = max(
-                1,
-                int(self._cfg.audio_input_queue_max_seconds / queue_chunk_seconds),
-            )
-            audio_queue: asyncio.Queue[AudioChunk | None] = asyncio.Queue(maxsize=audio_queue_maxsize)
-            self._state.audio_input_backlog_seconds = 0.0
-
-            async def enqueue_end_sentinel() -> None:
-                while audio_queue.full():
-                    dropped = audio_queue.get_nowait()
-                    if dropped is not None:
-                        dropped_seconds = len(dropped.samples) / dropped.sample_rate
-                        self._state.audio_input_backlog_seconds = max(
-                            0.0,
-                            self._state.audio_input_backlog_seconds - dropped_seconds,
-                        )
-                        self._state.audio_input_queue_drop_total += 1
-                await audio_queue.put(None)
-
-            async def fast_preview_loop() -> None:
-                if not self._cfg.fast_preview_enabled:
-                    return
-                interval = max(0.2, self._cfg.fast_preview_interval_seconds)
-                try:
-                    while not self._stopped.is_set():
-                        scheduled_wakeup = loop.time() + interval
-                        try:
-                            await asyncio.wait_for(self._stopped.wait(), timeout=interval)
-                            return
-                        except asyncio.TimeoutError:
-                            self._state.fast_preview_schedule_delay_seconds = max(
-                                0.0,
-                                loop.time() - scheduled_wakeup,
-                            )
-                        if source_generation != self._audio_source_generation or source is not self._cfg.audio_source:
-                            return
-                        if not self._pause_gate.is_set():
-                            self._state.fast_preview_segment = None
-                            await self._emit_transcript_preview()
-                            continue
-                        formal_pending = (
-                            bool(self._state.pending_segments)
-                            or self._state.preview_candidate_segment is not None
-                        )
-                        if formal_pending and not self._can_continue_preview_during_formal():
-                            continue
-                        if self._state.fast_preview_inflight:
-                            self._state.fast_preview_skipped += 1
-                            continue
-                        if not self._has_dedicated_preview_asr() and self._state.asr_inflight_start_wall_time is not None:
-                            self._state.fast_preview_skipped += 1
-                            continue
-                        if self._state.audio_input_backlog_seconds > self._cfg.fast_preview_max_backlog_seconds:
-                            self._state.fast_preview_skipped += 1
-                            continue
-                        if self._asr_safeguard_active():
-                            self._state.fast_preview_skipped += 1
-                            continue
-                        # When Qwen has its own executor the formal-Whisper RTF is
-                        # irrelevant to preview throughput — they run on separate
-                        # thread pools.  Only gate on Whisper RTF when preview
-                        # shares the same executor (no dedicated preview ASR).
-                        if not self._has_dedicated_preview_asr():
-                            formal_rtf = self._state.asr_realtime_factor
-                            if (
-                                formal_rtf is not None
-                                and formal_rtf > self._cfg.fast_preview_max_asr_realtime_factor
-                            ):
-                                self._state.fast_preview_skipped += 1
-                                continue
-                        # No RTF gate for dedicated preview ASR: fast_preview_inflight
-                        # already prevents concurrent runs; stale RTF from a small
-                        # post-commit window would self-reinforce and block indefinitely.
-
-                        snap = snapshot_recent_audio()
-                        if snap is None:
-                            continue
-                        samples, sample_rate, buf_start = snap
-                        rms = float(np.sqrt(np.mean(samples ** 2))) if samples.size else 0.0
-                        if rms < self._cfg.fast_preview_min_rms:
-                            self._state.fast_preview_segment = None
-                            await self._emit_transcript_preview()
-                            continue
-                        if formal_pending:
-                            self._state.preview_continued_during_formal += 1
-
-                        conditioned = audio_conditioner.process_samples(samples)
-                        effective_lang = self._cfg.forced_language or (
-                            self._state.locked_language if self._cfg.language_lock_enabled else None
-                        )
-                        try:
-                            seg = await self._transcribe_fast_preview_window(
-                                loop,
-                                conditioned,
-                                sample_rate,
-                                buf_start=buf_start,
-                                prompt=self._cfg.vocabulary_hint or None,
-                                forced_language=effective_lang,
-                            )
-                        except Exception as exc:
-                            self._state.fast_preview_skipped += 1
-                            logger.debug("fast preview ASR skipped: %s", exc)
-                            continue
-                        if seg is not None:
-                            self._state.fast_preview_segment = seg
-                            await self._emit_transcript_preview(seg)
-
-                        # Safety net: promote any Qwen previews that are too old
-                        # without formal Whisper coverage ("no missed sentences").
-                        await self._promote_time_stranded_previews(
-                            whisper_retry=try_whisper_retry_for_qwen,
-                        )
-                except asyncio.CancelledError:
-                    raise
-
-            async def read_audio_source() -> None:
-                try:
-                    async for raw_chunk in source.stream():
-                        if self._stopped.is_set():
-                            break
-                        if source_generation != self._audio_source_generation or source is not self._cfg.audio_source:
-                            break
-
-                        now = time.monotonic()
-                        if self._state.first_chunk_wall_time is None:
-                            self._state.first_chunk_wall_time = now
-                        self._state.last_chunk_wall_time = now
-                        chunk_rms = float(np.sqrt(np.mean(raw_chunk.samples ** 2))) if raw_chunk.samples.size else 0.0
-                        if chunk_rms >= self._cfg.silence_rms_threshold:
-                            self._state.last_voiced_chunk_wall_time = now
-                            await self._recover_watchdog_episode(
-                                "audio_all_silent",
-                                "audio levels recovered above silence threshold",
-                            )
-                        append_recent_audio(raw_chunk)
-
-                        chunk_seconds = len(raw_chunk.samples) / raw_chunk.sample_rate
-                        while audio_queue.full():
-                            dropped = audio_queue.get_nowait()
-                            if dropped is None:
-                                continue
-                            dropped_seconds = len(dropped.samples) / dropped.sample_rate
-                            self._state.audio_input_backlog_seconds = max(
-                                0.0,
-                                self._state.audio_input_backlog_seconds - dropped_seconds,
-                            )
-                            self._state.audio_input_queue_drop_total += 1
-                        raw_chunk.enqueue_wall_time = time.monotonic()
-                        await audio_queue.put(raw_chunk)
-                        self._state.audio_input_backlog_seconds += chunk_seconds
-                except Exception as exc:
-                    if not self._stopped.is_set():
-                        logger.exception("audio source stream crashed")
-                        await self._emit_watchdog_event(
-                            code="audio_source_crashed",
-                            message=f"audio source raised: {exc}",
-                            status="error",
-                        )
-                finally:
-                    await enqueue_end_sentinel()
-
-            reader_task = asyncio.create_task(read_audio_source())
-            preview_task = asyncio.create_task(fast_preview_loop())
-
-            try:
-                while not self._stopped.is_set():
-                    raw_chunk = await audio_queue.get()
-                    if raw_chunk is None:
-                        break
-                    if raw_chunk.enqueue_wall_time is not None:
-                        self._state.audio_queue_wait_seconds = max(
-                            0.0,
-                            time.monotonic() - raw_chunk.enqueue_wall_time,
-                        )
-                    chunk_seconds = len(raw_chunk.samples) / raw_chunk.sample_rate
-                    self._state.audio_input_backlog_seconds = max(
-                        0.0,
-                        self._state.audio_input_backlog_seconds - chunk_seconds,
-                    )
-                    if source_generation != self._audio_source_generation or source is not self._cfg.audio_source:
-                        source_switched = True
-                        break
-                    if not self._pause_gate.is_set():
-                        drop_live_buffers()
-                        continue
-
-                    energy_chunk = noise_reducer.process(raw_chunk)
-                    prepared_chunk = pre_vad_conditioner.process(energy_chunk)
-                    pre_vad.set_trailing_silence_seconds(
-                        self._resolve_pre_vad_trailing_silence_seconds()
-                    )
-                    vad_chunks = pre_vad.push(prepared_chunk)
-                    if vad_chunks:
-                        clear_weak_rescue_buffer()
-                    else:
-                        await maybe_rescue_weak_speech(
-                            energy_chunk=energy_chunk,
-                            prepared_chunk=prepared_chunk,
-                        )
-                    for chunk in vad_chunks:
-                        await consume_asr_chunk(chunk)
-
-                if not reader_task.done():
-                    reader_task.cancel()
-                    try:
-                        await reader_task
-                    except asyncio.CancelledError:
-                        pass
-                if not preview_task.done():
-                    preview_task.cancel()
-                    try:
-                        await preview_task
-                    except asyncio.CancelledError:
-                        pass
-
-                if source_generation != self._audio_source_generation or source is not self._cfg.audio_source:
-                    source_switched = True
-
-                if source_switched:
-                    self._clear_preview_candidate()
-                    self._state.fast_preview_segment = None
-                    self._state.pending_segments.clear()
-                    await self._emit_transcript_preview(None)
-                    continue
-
+            async def flush_pending_audio() -> None:
+                nonlocal accum_duration, accum_start_time, overlap_buf, pre_vad, recent_audio_duration
                 for chunk in pre_vad.finish():
                     await consume_asr_chunk(chunk)
 
@@ -2397,7 +2221,9 @@ class SessionManager:
                         if self._classify_asr_segment(asr_seg) != "keep":
                             continue
                         norm_text = asr_seg.text.strip()
-                        if norm_text and norm_text == self._state.last_emitted_text:
+                        if (norm_text and norm_text == self._state.last_emitted_text
+                                and self._state.last_emitted_end_time is not None
+                                and asr_buf_start + asr_seg.start_time < self._state.last_emitted_end_time - 0.01):
                             logger.warning(
                                 "ASR repetition detected on final flush (%r) — dropping",
                                 norm_text,
@@ -2441,6 +2267,284 @@ class SessionManager:
                 await self._flush_preview_candidate()
                 await self._drain_qwen_orphan_queue()
 
+                accum_samples.clear()
+                accum_chunk_rms.clear()
+                accum_duration = 0.0
+                accum_start_time = 0.0
+                overlap_buf = np.zeros(0, dtype=np.float32)
+                pre_vad = make_pre_vad_segmenter()
+                clear_weak_rescue_buffer()
+                recent_audio_chunks.clear()
+                recent_audio_duration = 0.0
+                self._state.fast_preview_segment = None
+
+            queue_chunk_seconds = max(0.05, self._cfg.audio_chunk_seconds)
+            audio_queue_maxsize = max(
+                1,
+                int(self._cfg.audio_input_queue_max_seconds / queue_chunk_seconds),
+            )
+            audio_queue: asyncio.Queue[AudioChunk | _PauseBoundary | None] = asyncio.Queue(maxsize=audio_queue_maxsize)
+            self._capture_queue = audio_queue
+            queue_closed = asyncio.Event()
+            self._capture_queue_closed = queue_closed
+            self._state.audio_input_backlog_seconds = 0.0
+
+            async def enqueue_end_sentinel() -> None:
+                await audio_queue.put(None)
+
+            async def fast_preview_loop() -> None:
+                if not self._cfg.fast_preview_enabled:
+                    return
+                interval = max(0.2, self._cfg.fast_preview_interval_seconds)
+                try:
+                    while not self._stopped.is_set():
+                        # Space expensive preview decodes apart; never queue old windows.
+                        last_wall = self._state.fast_preview_last_wall_seconds or 0.0
+                        cadence = max(interval, min(3.0, last_wall * 0.25))
+                        scheduled_wakeup = loop.time() + cadence
+                        try:
+                            await asyncio.wait_for(self._stopped.wait(), timeout=cadence)
+                            return
+                        except asyncio.TimeoutError:
+                            self._state.fast_preview_schedule_delay_seconds = max(
+                                0.0,
+                                loop.time() - scheduled_wakeup,
+                            )
+                        if source_generation != self._audio_source_generation or source is not self._cfg.audio_source:
+                            return
+                        if not self._pause_gate.is_set():
+                            self._state.fast_preview_segment = None
+                            await self._emit_transcript_preview()
+                            continue
+                        formal_pending = (
+                            bool(self._state.pending_segments)
+                            or self._state.preview_candidate_segment is not None
+                        )
+                        if formal_pending and not self._can_continue_preview_during_formal():
+                            continue
+                        if self._state.fast_preview_inflight:
+                            self._state.fast_preview_skip_reason = "previous preview still running"
+                            self._state.fast_preview_skipped += 1
+                            continue
+                        if not self._has_dedicated_preview_asr() and self._state.asr_inflight_start_wall_time is not None:
+                            self._state.fast_preview_skipped += 1
+                            continue
+                        if self._state.audio_input_backlog_seconds > self._cfg.fast_preview_max_backlog_seconds:
+                            self._state.fast_preview_skip_reason = "audio capture backlog"
+                            self._state.fast_preview_skipped += 1
+                            continue
+                        if self._asr_safeguard_active() and not (self._has_dedicated_preview_asr() and self._cfg.formal_asr_device == "metal"):
+                            self._state.fast_preview_skip_reason = "formal ASR overload protection"
+                            self._state.fast_preview_skipped += 1
+                            continue
+                        # When Qwen has its own executor the formal-Whisper RTF is
+                        # irrelevant to preview throughput — they run on separate
+                        # thread pools.  Only gate on Whisper RTF when preview
+                        # shares the same executor (no dedicated preview ASR).
+                        if not self._has_dedicated_preview_asr():
+                            formal_rtf = self._state.asr_realtime_factor
+                            if (
+                                formal_rtf is not None
+                                and formal_rtf > self._cfg.fast_preview_max_asr_realtime_factor
+                            ):
+                                self._state.fast_preview_skipped += 1
+                                continue
+                        # No RTF gate for dedicated preview ASR: fast_preview_inflight
+                        # already prevents concurrent runs; stale RTF from a small
+                        # post-commit window would self-reinforce and block indefinitely.
+
+                        snap = snapshot_recent_audio()
+                        if snap is None:
+                            continue
+                        samples, sample_rate, buf_start = snap
+                        rms = float(np.sqrt(np.mean(samples ** 2))) if samples.size else 0.0
+                        if rms < self._cfg.fast_preview_min_rms:
+                            self._state.fast_preview_segment = None
+                            await self._emit_transcript_preview()
+                            continue
+                        if formal_pending:
+                            self._state.preview_continued_during_formal += 1
+
+                        # Tiny post-commit slices produce unstable drafts and misleading RTF.
+                        if len(samples) / sample_rate < 0.8:
+                            self._state.fast_preview_skip_reason = "collecting more speech"
+                            continue
+                        self._state.fast_preview_skip_reason = None
+                        conditioned = audio_conditioner.process_samples(samples)
+                        effective_lang = self._cfg.forced_language or (
+                            self._state.locked_language if self._cfg.language_lock_enabled else None
+                        )
+                        preview_generation = self._state.fast_preview_generation
+                        try:
+                            seg = await self._transcribe_fast_preview_window(
+                                loop,
+                                conditioned,
+                                sample_rate,
+                                buf_start=buf_start,
+                                prompt=self._cfg.vocabulary_hint or None,
+                                forced_language=effective_lang,
+                            )
+                        except Exception as exc:
+                            self._state.fast_preview_skipped += 1
+                            logger.debug("fast preview ASR skipped: %s", exc)
+                            continue
+                        if (not self._pause_gate.is_set() or source_generation != self._audio_source_generation
+                                or preview_generation != self._state.fast_preview_generation):
+                            self._state.fast_preview_id = None
+                            self._state.fast_preview_revision = 0
+                            continue
+                        if seg is not None and recent_audio_chunks:
+                            latest = recent_audio_chunks[-1]
+                            latest_end = latest.start_time + len(latest.samples) / latest.sample_rate
+                            if latest_end - seg.end_time > max(3.0, self._cfg.fast_preview_window_seconds):
+                                self._state.preview_stale_suppressed += 1
+                                self._state.fast_preview_skip_reason = "preview result arrived too late"
+                                seg = None
+                        if seg is not None:
+                            self._state.fast_preview_segment = seg
+                            await self._emit_transcript_preview(seg)
+
+                        # Safety net: promote any Qwen previews that are too old
+                        # without formal Whisper coverage ("no missed sentences").
+                        await self._promote_time_stranded_previews(
+                            whisper_retry=try_whisper_retry_for_qwen,
+                        )
+                except asyncio.CancelledError:
+                    raise
+
+            async def read_audio_source() -> None:
+                cancelled = False
+                try:
+                    async for raw_chunk in source.stream():
+                        if self._stopped.is_set():
+                            break
+                        if source_generation != self._audio_source_generation or source is not self._cfg.audio_source:
+                            break
+                        if not self._pause_gate.is_set():
+                            continue
+
+                        now = time.monotonic()
+                        if self._state.first_chunk_wall_time is None:
+                            self._state.first_chunk_wall_time = now
+                        self._state.last_chunk_wall_time = now
+                        chunk_rms = float(np.sqrt(np.mean(raw_chunk.samples ** 2))) if raw_chunk.samples.size else 0.0
+                        if chunk_rms >= self._cfg.silence_rms_threshold:
+                            self._state.last_voiced_chunk_wall_time = now
+                            await self._recover_watchdog_episode(
+                                "audio_all_silent",
+                                "audio levels recovered above silence threshold",
+                            )
+                        # The watchdog emission above can yield while pause() runs.
+                        if not self._pause_gate.is_set():
+                            continue
+                        append_recent_audio(raw_chunk)
+
+                        chunk_seconds = len(raw_chunk.samples) / raw_chunk.sample_rate
+                        while audio_queue.full():
+                            dropped = audio_queue.get_nowait()
+                            if dropped is None:
+                                continue
+                            if isinstance(dropped, _PauseBoundary):
+                                # A boundary is a control message, never audio to drop.
+                                await audio_queue.put(dropped)
+                                break
+                            dropped_seconds = len(dropped.samples) / dropped.sample_rate
+                            self._state.audio_input_backlog_seconds = max(
+                                0.0,
+                                self._state.audio_input_backlog_seconds - dropped_seconds,
+                            )
+                            self._state.audio_input_queue_drop_total += 1
+                        raw_chunk.enqueue_wall_time = time.monotonic()
+                        await audio_queue.put(raw_chunk)
+                        self._state.audio_input_backlog_seconds += chunk_seconds
+                except asyncio.CancelledError:
+                    cancelled = True
+                    raise
+                except Exception as exc:
+                    if not self._stopped.is_set():
+                        logger.exception("audio source stream crashed")
+                        await self._emit_watchdog_event(
+                            code="audio_source_crashed",
+                            message=f"audio source raised: {exc}",
+                            status="error",
+                        )
+                finally:
+                    if not cancelled:
+                        await enqueue_end_sentinel()
+
+            reader_task = asyncio.create_task(read_audio_source())
+            preview_task = asyncio.create_task(fast_preview_loop())
+
+            try:
+                while True:
+                    raw_chunk = await audio_queue.get()
+                    if raw_chunk is None:
+                        break
+                    if isinstance(raw_chunk, _PauseBoundary):
+                        try:
+                            await flush_pending_audio()
+                        except Exception as exc:
+                            if not raw_chunk.completed.done():
+                                raw_chunk.completed.set_exception(exc)
+                            raise
+                        else:
+                            if not raw_chunk.completed.done():
+                                raw_chunk.completed.set_result(None)
+                        continue
+                    if raw_chunk.enqueue_wall_time is not None:
+                        self._state.audio_queue_wait_seconds = max(
+                            0.0,
+                            time.monotonic() - raw_chunk.enqueue_wall_time,
+                        )
+                    chunk_seconds = len(raw_chunk.samples) / raw_chunk.sample_rate
+                    self._state.audio_input_backlog_seconds = max(
+                        0.0,
+                        self._state.audio_input_backlog_seconds - chunk_seconds,
+                    )
+                    if source_generation != self._audio_source_generation or source is not self._cfg.audio_source:
+                        source_switched = True
+                        break
+                    energy_chunk = noise_reducer.process(raw_chunk)
+                    prepared_chunk = pre_vad_conditioner.process(energy_chunk)
+                    pre_vad.set_trailing_silence_seconds(
+                        self._resolve_pre_vad_trailing_silence_seconds()
+                    )
+                    vad_chunks = pre_vad.push(prepared_chunk)
+                    if vad_chunks:
+                        clear_weak_rescue_buffer()
+                    else:
+                        await maybe_rescue_weak_speech(
+                            energy_chunk=energy_chunk,
+                            prepared_chunk=prepared_chunk,
+                        )
+                    for chunk in vad_chunks:
+                        await consume_asr_chunk(chunk)
+
+                if not reader_task.done():
+                    reader_task.cancel()
+                    try:
+                        await reader_task
+                    except asyncio.CancelledError:
+                        pass
+                if not preview_task.done():
+                    preview_task.cancel()
+                    try:
+                        await preview_task
+                    except asyncio.CancelledError:
+                        pass
+
+                if source_generation != self._audio_source_generation or source is not self._cfg.audio_source:
+                    source_switched = True
+
+                if source_switched:
+                    self._clear_preview_candidate()
+                    self._state.fast_preview_segment = None
+                    self._state.pending_segments.clear()
+                    await self._emit_transcript_preview(None)
+                    continue
+
+                await flush_pending_audio()
+
                 if self._stopped.is_set() and not self._graceful_stop_requested:
                     logger.info(
                         "fast shutdown requested; skipping summary/memory/finalization"
@@ -2459,8 +2563,21 @@ class SessionManager:
                     label="translation",
                 )
 
-                await self._emit_memory(force=True)
-                await self._emit_final()
+                if not self._cfg.final_summary_enabled:
+                    logger.info("Final summary disabled for meeting %s", self._state.meeting_id)
+                elif self._cfg.enqueue_final_summary is not None:
+                    if self._cfg.storage.list_segments(self._state.meeting_id):
+                        job = await self._cfg.enqueue_final_summary(
+                            self._state.meeting_id, self._cfg.summary_language, self._cfg.vocabulary_hint)
+                        await self._emit("final_summary_job", {k: v for k, v in job.items() if k != "vocabulary"})
+                else:
+                    await self._emit_memory(force=True)
+                    await self._emit_final()
+                # A finite source has ended normally. Do not leave the UI and
+                # watchdog waiting for microphone chunks that will never come.
+                self._cfg.storage.end_meeting(self._state.meeting_id)
+                await self._emit("session_state", self._session_state_payload(state="ended"))
+                self._stopped.set()
                 break
             except Exception as exc:
                 if "reader_task" in locals() and not reader_task.done():
@@ -2487,9 +2604,23 @@ class SessionManager:
                     ErrorPayload(code="session_loop", message=str(exc)),
                 )
                 break
+            finally:
+                queue_closed.set()
+                if self._capture_queue is audio_queue:
+                    self._capture_queue = None
+                    self._capture_queue_closed = None
+                for child in (reader_task, preview_task):
+                    if not child.done():
+                        child.cancel()
+                await asyncio.gather(reader_task, preview_task, return_exceptions=True)
 
     def _update_resource_pressure(self) -> str:
         rtf = self._state.asr_realtime_factor or 0.0
+        if self._state.asr_last_audio_seconds is not None and self._state.asr_last_audio_seconds < 1.0:
+            # A sub-second endpoint carries fixed dispatch overhead. Preserve
+            # its measured RTF for diagnostics, but evaluate overload over at
+            # least one second of audio rather than latching a false alarm.
+            rtf = (self._state.asr_last_wall_seconds or 0.0) / 1.0
         backlog = self._state.audio_input_backlog_seconds
         pending_background = sum(1 for task in self._summary_tasks if not task.done()) + sum(
             1 for task in self._translation_task_order if not task.done()
@@ -2565,6 +2696,14 @@ class SessionManager:
 
     def _schedule_summary(self, coro) -> None:
         """Run a summary coroutine as a background task."""
+        if not self._cfg.live_summaries_enabled:
+            coro.close()
+            return
+        kind = coro.cr_code.co_name
+        existing = self._summary_tasks_by_kind.get(kind)
+        if existing is not None and not existing.done():
+            coro.close()
+            return
         self._update_resource_pressure()
         if self._state.resource_pressure_level == "critical":
             self._governor_skip("summary")
@@ -2572,7 +2711,12 @@ class SessionManager:
             return
         task = asyncio.create_task(coro)
         self._summary_tasks.add(task)
+        self._summary_tasks_by_kind[kind] = task
         task.add_done_callback(self._summary_tasks.discard)
+        def forget(done: asyncio.Task) -> None:
+            if self._summary_tasks_by_kind.get(kind) is done:
+                self._summary_tasks_by_kind.pop(kind, None)
+        task.add_done_callback(forget)
 
     def _schedule_translation(self, seg: TranscriptSegment, target_language: LanguageCode) -> None:
         if seg.original_language == target_language:
@@ -2739,7 +2883,7 @@ class SessionManager:
             return
 
         threshold = max(0.1, self._cfg.asr_safeguard_rtf_threshold)
-        if rtf >= threshold:
+        if wall_seconds / max(audio_seconds, 1.0) >= threshold:
             was_active = self._asr_safeguard_active()
             self._state.asr_safeguard_cooldown_windows = max(
                 1,
@@ -2999,8 +3143,12 @@ class SessionManager:
         for asr_seg in usable:
             quality = self._merge_quality(quality, self._compute_quality(asr_seg))
 
+        if self._state.fast_preview_id is None:
+            self._state.fast_preview_id = f"preview-{uuid.uuid4()}"
+            self._state.fast_preview_revision = 0
+        self._state.fast_preview_revision += 1
         seg = TranscriptSegment(
-            id=f"preview-{uuid.uuid4()}",
+            id=self._state.fast_preview_id,
             meeting_id=self._state.meeting_id,
             start_time=buf_start + first.start_time,
             end_time=buf_start + last.end_time,
@@ -3008,6 +3156,9 @@ class SessionManager:
             original_language=language,
             confidence=min(s.confidence for s in usable),
             quality=quality,
+            status="partial",
+            revision=self._state.fast_preview_revision,
+            sequence=self._state.transcript_sequence + 1,
             created_at=datetime.now(tz=timezone.utc),
             emitted_at_elapsed_seconds=max(
                 self._state.elapsed_seconds,
@@ -3272,6 +3423,18 @@ class SessionManager:
     async def _persist_and_emit_segment(
         self, seg: TranscriptSegment, *, is_qwen_draft: bool = False
     ) -> None:
+        preview = self._state.fast_preview_segment
+        if (self._cfg.reuse_formal_preview_identity and not is_qwen_draft and preview is not None
+                and preview.status == "partial" and seg.start_time <= preview.start_time + 0.3
+                and seg.end_time >= preview.end_time - 0.3 and preview.end_time > seg.start_time):
+            seg = seg.model_copy(update={"id": preview.id, "revision": preview.revision + 1})
+        self._state.transcript_sequence += 1
+        seg = seg.model_copy(update={"status": "final", "sequence": self._state.transcript_sequence})
+        # A newly committed segment starts a new preview window. Preview data
+        # itself is never persisted by the shared MLX lane.
+        self._state.fast_preview_id = None
+        self._state.fast_preview_revision = 0
+        self._state.fast_preview_generation += 1
         if not is_qwen_draft:
             await self._whisper_replaces_qwen_drafts(seg)
         self._state.segments.append(seg)
@@ -3379,14 +3542,16 @@ class SessionManager:
             if self._stopped.is_set():
                 return
             loop = asyncio.get_running_loop()
-            translated = await loop.run_in_executor(
-                self._translation_executor,
-                lambda: self._cfg.translator.translate(
+            def translate():
+                return self._cfg.translator.translate(
                     seg.text,
                     source_language=seg.original_language,
                     target_language=target_language,
-                ),
-            )
+                )
+            if self._cfg.inference_coordinator is not None:
+                translated = await self._cfg.inference_coordinator.run(translate, executor=self._translation_executor)
+            else:
+                translated = await loop.run_in_executor(self._translation_executor, translate)
             translated = translated.strip()
             await self._maybe_emit_translation_error()
             if not translated or translated == seg.text:
@@ -3415,7 +3580,7 @@ class SessionManager:
         quality_note = "experimental_fast_preview" if is_experimental else None
         # Resolve which segment to show (explicit argument beats state lookup).
         resolved = segment if segment is not None else self._latest_preview_segment()
-        if self._cfg.runtime_profile == "summary_only":
+        if self._cfg.runtime_profile == "summary_only" or not self._pause_gate.is_set():
             resolved = None
         # Stale-preview suppression: if the segment's time range is already fully
         # covered by the committed formal transcript, suppress it and emit null.
@@ -3614,16 +3779,18 @@ class SessionManager:
             "refined_transcript",
         } else "rolling_summary"
         loop = asyncio.get_running_loop()
-        content = await loop.run_in_executor(
-            self._summary_executor,
-            lambda: self._cfg.summarizer.summarize(
+        def summarize():
+            return self._cfg.summarizer.summarize(
                 segments,
                 kind=kind,  # type: ignore[arg-type]
                 language=self._cfg.summary_language,
                 previous_summary=previous_summary,
                 vocabulary=self._cfg.vocabulary_hint,
-            ),
-        )
+            )
+        if self._cfg.inference_coordinator is not None:
+            content = await self._cfg.inference_coordinator.run(summarize, executor=self._summary_executor)
+        else:
+            content = await loop.run_in_executor(self._summary_executor, summarize)
         await self._maybe_emit_llm_error()
         if not content:
             return None
@@ -3830,7 +3997,7 @@ class SessionManager:
             result = await loop.run_in_executor(
                 self._summary_executor,
                 lambda: self._cfg.summarizer.finalize_meeting(
-                    self._summary_context_segments(),
+                    self._cfg.storage.list_segments(self._state.meeting_id),
                     language=self._cfg.summary_language,
                     vocabulary=self._cfg.vocabulary_hint,
                     meeting_memory=self._state.latest_meeting_memory,

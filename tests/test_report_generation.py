@@ -55,6 +55,8 @@ def test_report_endpoint_persists_new_revisions_and_handles_missing_transcript(t
     storage.insert_segment(segment())
     app.state.storage = storage
     app.state.report_locks = {}
+    from meetingbro.resources.coordinator import InferenceCoordinator
+    app.state.inference_coordinator = InferenceCoordinator()
     monkeypatch.setattr(OpenAICompatibleClient, 'from_env', classmethod(lambda cls: None))
 
     async def exercise():
@@ -72,3 +74,23 @@ def test_report_endpoint_persists_new_revisions_and_handles_missing_transcript(t
         assert listing[0].document.sections[0].blocks[0].source_segment_ids == ['s']
     asyncio.run(exercise())
     storage.close()
+
+
+def test_repair_is_bounded_and_chinese_adjacent_numbers_are_checked():
+    class RepairClient:
+        def __init__(self, outputs): self.outputs, self.calls = iter(outputs), 0
+        def chat(self, **kwargs):
+            self.calls += 1
+            return next(self.outputs)
+
+    valid = json.dumps({'blocks': [{'type': 'timeline', 'title': '2026年', 'text': '2026年開始', 'source_segment_ids': ['s']}]}, ensure_ascii=False)
+    invalid = json.dumps({'blocks': [{'type': 'timeline', 'title': '2027年', 'text': '2027年開始', 'source_segment_ids': ['s']}]}, ensure_ascii=False)
+    client = RepairClient([invalid, valid])
+    doc = generate_report([segment('2026年開始')], language='zh', client=client)
+    assert client.calls == 2 and doc.generation_method == 'llm'
+    assert doc.sections[0].title == '2026年' and doc.sections[0].layout_type == 'timeline'
+    assert doc.takeaways[0].source_segment_ids == ['s']
+    client = RepairClient([invalid, invalid])
+    doc = generate_report([segment('2026年開始')], language='zh', client=client)
+    assert client.calls == 2 and doc.generation_method == 'extractive'
+    assert doc.sections[0].blocks[0].text == '2026年開始'

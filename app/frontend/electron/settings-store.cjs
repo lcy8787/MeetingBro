@@ -21,9 +21,13 @@ function defaultSettings() {
   return {
     firstRunComplete: false,
     backendPort: 8765,
-    llm: { apiKey: "", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini" },
+    llm: { apiKey: "", baseUrl: "http://127.0.0.1:11434/v1", model: "qwen2.5:3b" },
+    liveSummariesEnabled: true,
+    finalSummaryEnabled: true,
+    llmResourceMode: "balanced", // realtime | balanced | post_recording
+    whisperEngine: "auto", // auto | faster-whisper | whisper-cpp
     whisperSize: "auto", // auto | tiny | base | small | medium | large-v2 | large-v3
-    whisperDevice: "auto", // auto | cpu | cuda
+    whisperDevice: "auto", // auto | cpu | cuda | metal
     previewBackend: "qwen3", // qwen3 | shared
   };
 }
@@ -67,13 +71,17 @@ function writeSettings(partial) {
 // Settings that only take effect at backend startup (changing them requires a
 // backend restart). Changing anything else (audio source, languages, runtime
 // profile, vocabulary) is applied live over the WebSocket and never restarts.
-const STARTUP_KEYS = ["backendPort", "llm", "whisperSize", "whisperDevice", "previewBackend"];
+const STARTUP_KEYS = ["backendPort", "llm", "liveSummariesEnabled", "finalSummaryEnabled", "llmResourceMode", "whisperEngine", "whisperSize", "whisperDevice", "previewBackend"];
 
 function startupSignature(settings) {
   const s = withDefaults(settings);
   return JSON.stringify({
     backendPort: s.backendPort,
     llm: s.llm,
+    liveSummariesEnabled: s.liveSummariesEnabled,
+    finalSummaryEnabled: s.finalSummaryEnabled,
+    llmResourceMode: s.llmResourceMode,
+    whisperEngine: s.whisperEngine,
     whisperSize: s.whisperSize,
     whisperDevice: s.whisperDevice,
     previewBackend: s.previewBackend,
@@ -87,19 +95,25 @@ function settingsToEnv(settings) {
   const s = withDefaults(settings);
   const env = {};
   env.MEETINGBRO_PORT = String(s.backendPort || 8765);
+  env.MEETINGBRO_LIVE_SUMMARIES_ENABLED = s.liveSummariesEnabled ? "true" : "false";
+  env.MEETINGBRO_FINAL_SUMMARY_ENABLED = s.finalSummaryEnabled ? "true" : "false";
+  env.MEETINGBRO_LLM_RESOURCE_MODE = ["realtime", "balanced", "post_recording"].includes(s.llmResourceMode) ? s.llmResourceMode : "balanced";
 
   if (s.llm && s.llm.apiKey) env.MEETINGBRO_LLM_API_KEY = s.llm.apiKey;
   if (s.llm && s.llm.baseUrl) env.MEETINGBRO_LLM_BASE_URL = s.llm.baseUrl;
   if (s.llm && s.llm.model) env.MEETINGBRO_LLM_MODEL = s.llm.model;
 
+  if (s.whisperEngine) env.MEETINGBRO_WHISPER_ENGINE = s.whisperEngine;
   if (s.whisperSize) env.MEETINGBRO_WHISPER_SIZE = s.whisperSize; // backend treats "auto" as recommended
   if (s.whisperDevice) env.MEETINGBRO_WHISPER_DEVICE = s.whisperDevice;
 
   if (s.previewBackend === "qwen3") {
     env.MEETINGBRO_PREVIEW_ASR_BACKEND = "qwen3";
+  } else if (s.previewBackend === "whisper-streaming") {
+    env.MEETINGBRO_PREVIEW_ASR_BACKEND = "whisper-streaming";
   } else {
     // "shared" reuses the formal model for previews (no separate preview model).
-    env.MEETINGBRO_PREVIEW_ASR_BACKEND = "";
+    env.MEETINGBRO_PREVIEW_ASR_BACKEND = "shared";
     env.MEETINGBRO_PREVIEW_WHISPER_SIZE = "shared";
   }
   return env;

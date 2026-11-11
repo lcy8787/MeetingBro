@@ -37,6 +37,9 @@ class TranscriptSegment(BaseModel):
     translations: dict[LanguageCode, str] = Field(default_factory=dict)
     created_at: datetime
     emitted_at_elapsed_seconds: Optional[float] = None
+    status: Literal["partial", "final"] = "final"
+    revision: int = Field(default=1, ge=1)
+    sequence: Optional[int] = Field(default=None, ge=1)
 
 
 class SummarySnapshot(BaseModel):
@@ -56,7 +59,7 @@ class SummarySnapshot(BaseModel):
 class ReportBlock(BaseModel):
     """Plain text only; clients must render all fields as text, never HTML."""
 
-    type: Literal["paragraph", "bullet", "quote", "action", "concept", "timeline", "comparison", "argument", "statistic", "conclusion"] = "paragraph"
+    type: Literal["paragraph", "bullet", "quote", "action", "concept", "step", "timeline", "comparison", "argument", "statistic", "conclusion"] = "paragraph"
     text: str
     title: str = ""
     detail: str = ""
@@ -66,7 +69,7 @@ class ReportBlock(BaseModel):
 class ReportSection(BaseModel):
     id: str = ""
     title: str = ""
-    layout_type: Literal["text", "concept", "timeline", "comparison", "argument", "statistic", "conclusion"] = "text"
+    layout_type: Literal["text", "concept", "step_flow", "timeline", "comparison", "argument", "statistic", "conclusion"] = "text"
     blocks: list[ReportBlock] = Field(default_factory=list)
 
 
@@ -157,6 +160,8 @@ class SessionStatePayload(BaseModel):
     weak_rescue_emitted: int = 0
     weak_rescue_buffer_seconds: float = 0.0
     summary_pending_count: int = 0
+    inference_memory_free_percent: Optional[float] = None
+    inference_defer_reason: Optional[str] = None
     translation_pending_count: int = 0
     translation_backlog_trim_total: int = 0
     audio_drop_total: int = 0
@@ -168,6 +173,7 @@ class SessionStatePayload(BaseModel):
     fast_preview_attempts: int = 0
     fast_preview_emitted: int = 0
     fast_preview_skipped: int = 0
+    fast_preview_skip_reason: Optional[str] = None
     fast_preview_last_audio_seconds: Optional[float] = None
     fast_preview_last_wall_seconds: Optional[float] = None
     fast_preview_realtime_factor: Optional[float] = None

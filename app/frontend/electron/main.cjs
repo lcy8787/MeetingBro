@@ -101,11 +101,12 @@ app.whenReady().then(() => {
     const after = settingsStore.startupSignature(saved);
     const startupChanged = before !== after;
     let restarted = false;
-    if (startupChanged && !sessionActive) {
+    const requiresManualRestart = startupChanged && !sessionActive && supervisor.attached;
+    if (startupChanged && !sessionActive && !requiresManualRestart) {
       await supervisor.restart({ env: settingsStore.settingsToEnv(saved), port: saved.backendPort });
       restarted = true;
     }
-    return { settings: saved, startupChanged, restarted, backend: supervisor.info() };
+    return { settings: saved, startupChanged, restarted, requiresManualRestart, backend: supervisor.info() };
   });
 
   createWindow();

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import platform
 from dataclasses import dataclass, field
 
 
@@ -18,21 +19,19 @@ class HardwareProfile:
     recommended_qwen_provider: str = "cpu"
     recommended_qwen_threads: int = 2
     recommended_runtime_profile: str = "balanced"
+    apple_metal_available: bool = False
+    whisper_cpp_available: bool = False
+    recommended_whisper_engine: str = "faster-whisper"
 
     @property
     def label(self) -> str:
-        accel = "cuda" if self.ctranslate2_cuda_available else "cpu"
+        accel = "cuda" if self.ctranslate2_cuda_available else "metal" if self.apple_metal_available else "cpu"
         return f"{accel}/{self.cpu_count}c"
 
     @property
     def summary(self) -> str:
-        cuda = (
-            f"CUDA x{self.ctranslate2_cuda_device_count}"
-            if self.ctranslate2_cuda_available
-            else "CUDA unavailable"
-        )
         return (
-            f"{cuda}; Whisper {self.recommended_whisper_device} "
+            f"Whisper {self.recommended_whisper_engine} {self.recommended_whisper_device} "
             f"{self.recommended_whisper_compute_type}; "
             f"Qwen {self.recommended_qwen_provider} {self.recommended_qwen_threads} threads"
         )
@@ -74,6 +73,9 @@ def detect_hardware_profile() -> HardwareProfile:
     cpu_count = max(1, os.cpu_count() or 1)
     ct2_cuda, ct2_cuda_count, ct2_error = _detect_ctranslate2_cuda()
     onnx_providers, onnx_cuda = _detect_onnx_providers()
+    from .asr.whisper_cpp_adapter import engine_binary
+    native_available = engine_binary().is_file()
+    metal_available = platform.system() == "Darwin" and platform.machine() == "arm64" and native_available
 
     if ct2_cuda:
         whisper_device = "cuda"
@@ -82,6 +84,11 @@ def detect_hardware_profile() -> HardwareProfile:
         # on a GPU it is the best speed/accuracy trade-off for realtime captions.
         whisper_size = "large-v3-turbo"
         runtime_profile = "performance"
+    elif metal_available:
+        whisper_device = "metal"
+        whisper_compute = "float16"
+        whisper_size = "small"
+        runtime_profile = "balanced"
     else:
         whisper_device = "cpu"
         whisper_compute = "int8"
@@ -105,5 +112,8 @@ def detect_hardware_profile() -> HardwareProfile:
         recommended_qwen_provider="cpu",
         recommended_qwen_threads=qwen_threads,
         recommended_runtime_profile=runtime_profile,
+        apple_metal_available=metal_available,
+        whisper_cpp_available=native_available,
+        recommended_whisper_engine="whisper-cpp" if metal_available and not ct2_cuda else "faster-whisper",
     )
 

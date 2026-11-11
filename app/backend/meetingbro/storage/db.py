@@ -92,19 +92,24 @@ class Storage:
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
-        with self._lock:
-            self._conn.executescript(SCHEMA)
-            try:
-                self._conn.execute("ALTER TABLE transcript_segments ADD COLUMN quality TEXT NOT NULL DEFAULT 'ok'")
-            except sqlite3.OperationalError:
-                pass
-            try:
-                self._conn.execute("ALTER TABLE notes ADD COLUMN time_seconds REAL")
+        try:
+            with self._lock:
+                self._conn.executescript(SCHEMA)
+                try:
+                    self._conn.execute("ALTER TABLE transcript_segments ADD COLUMN quality TEXT NOT NULL DEFAULT 'ok'")
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    self._conn.execute("ALTER TABLE notes ADD COLUMN time_seconds REAL")
+                    self._conn.commit()
+                except sqlite3.OperationalError:
+                    pass
                 self._conn.commit()
-            except sqlite3.OperationalError:
-                pass
-            self._conn.commit()
-            self._migrate_reports()
+                self._migrate_reports()
+
+        except Exception:
+            self._conn.close()
+            raise
 
     def _migrate_reports(self) -> None:
         # Keep our own migration ledger so existing databases' user_version is untouched.
@@ -121,6 +126,19 @@ class Storage:
                 )""")
                 self._conn.execute("CREATE INDEX idx_reports_meeting ON report_revisions(meeting_id, report_type, revision)")
                 self._conn.execute("INSERT INTO meetingbro_migrations(version) VALUES (1)")
+            if not self._conn.execute("SELECT 1 FROM meetingbro_migrations WHERE version = 2").fetchone():
+                self._conn.execute("ALTER TABLE transcript_segments ADD COLUMN revision INTEGER NOT NULL DEFAULT 1")
+                self._conn.execute("ALTER TABLE transcript_segments ADD COLUMN sequence INTEGER")
+                self._conn.execute("INSERT INTO meetingbro_migrations(version) VALUES (2)")
+            if not self._conn.execute("SELECT 1 FROM meetingbro_migrations WHERE version = 3").fetchone():
+                self._conn.execute("""CREATE TABLE final_summary_jobs (
+                    id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL UNIQUE,
+                    status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'succeeded', 'failed')),
+                    language TEXT NOT NULL, vocabulary TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+                    error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    FOREIGN KEY(meeting_id) REFERENCES meetings(id) ON DELETE CASCADE
+                )""")
+                self._conn.execute("INSERT INTO meetingbro_migrations(version) VALUES (3)")
             self._conn.commit()
         except Exception:
             self._conn.rollback()
@@ -166,6 +184,92 @@ class Storage:
         return [ReportRevision(report_id=r[0], meeting_id=r[1], report_type=r[2], revision=r[3],
                                document=ReportDocument.model_validate_json(r[4]),
                                created_at=datetime.fromisoformat(r[5])) for r in rows]
+
+    def queue_final_summary(self, job_id: str, meeting_id: str, language: str, vocabulary: str | None) -> dict:
+        now = _iso(_utc_now())
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                self._conn.execute("""INSERT INTO final_summary_jobs
+                    (id, meeting_id, status, language, vocabulary, created_at, updated_at)
+                    VALUES (?, ?, 'queued', ?, ?, ?, ?)
+                    ON CONFLICT(meeting_id) DO UPDATE SET status='queued', language=excluded.language,
+                        vocabulary=excluded.vocabulary, error=NULL, updated_at=excluded.updated_at
+                    WHERE final_summary_jobs.status IN ('failed', 'succeeded')""",
+                    (job_id, meeting_id, language, vocabulary, now, now))
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        result = self.get_final_summary_job(meeting_id)
+        assert result is not None
+        return result
+
+    def get_final_summary_job(self, meeting_id: str) -> Optional[dict]:
+        with self._lock:
+            row = self._conn.execute("SELECT id, meeting_id, status, language, vocabulary, attempts, error, created_at, updated_at FROM final_summary_jobs WHERE meeting_id = ?", (meeting_id,)).fetchone()
+        return dict(zip(('id', 'meeting_id', 'status', 'language', 'vocabulary', 'attempts', 'error', 'created_at', 'updated_at'), row)) if row else None
+
+    def record_incomplete_audio_job(self, job_id: str, meeting_id: str, language: str, vocabulary: str | None) -> None:
+        now = _iso(_utc_now())
+        with self._lock:
+            self._conn.execute("""INSERT INTO final_summary_jobs
+                (id, meeting_id, status, language, vocabulary, error, created_at, updated_at)
+                VALUES (?, ?, 'failed', ?, ?, ?, ?, ?) ON CONFLICT(meeting_id) DO NOTHING""",
+                (job_id, meeting_id, language, vocabulary,
+                 'Audio processing timed out. The saved transcript may be incomplete; review it before retrying.', now, now))
+            self._conn.commit()
+
+    def recover_final_summary_jobs(self) -> None:
+        with self._lock:
+            self._conn.execute("UPDATE final_summary_jobs SET status='queued', updated_at=? WHERE status='running'", (_iso(_utc_now()),))
+            self._conn.commit()
+
+    def claim_final_summary_job(self) -> Optional[dict]:
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                row = self._conn.execute("SELECT id, meeting_id, language, vocabulary FROM final_summary_jobs WHERE status='queued' ORDER BY created_at, id LIMIT 1").fetchone()
+                if row:
+                    self._conn.execute("UPDATE final_summary_jobs SET status='running', attempts=attempts+1, updated_at=? WHERE id=?", (_iso(_utc_now()), row[0]))
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        return dict(zip(('id', 'meeting_id', 'language', 'vocabulary'), row)) if row else None
+
+    def has_queued_final_summary_job(self) -> bool:
+        with self._lock:
+            return self._conn.execute("SELECT 1 FROM final_summary_jobs WHERE status='queued' LIMIT 1").fetchone() is not None
+
+    def fail_final_summary_job(self, job_id: str, error: str) -> None:
+        with self._lock:
+            self._conn.execute("UPDATE final_summary_jobs SET status='failed', error=?, updated_at=? WHERE id=? AND status='running'", (error[:500], _iso(_utc_now()), job_id))
+            self._conn.commit()
+
+    def complete_final_summary_job(self, job_id: str, snapshots: list[SummarySnapshot]) -> bool:
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                row = self._conn.execute("SELECT meeting_id FROM final_summary_jobs WHERE id=? AND status='running'", (job_id,)).fetchone()
+                if row is None:
+                    self._conn.rollback()
+                    return False
+                for snap in snapshots:
+                    if snap.meeting_id != row[0]:
+                        raise ValueError("Snapshot does not belong to this job")
+                    self._conn.execute("UPDATE summary_snapshots SET is_latest=0 WHERE meeting_id=? AND summary_type=?", (snap.meeting_id, snap.summary_type))
+                    self._conn.execute("""INSERT INTO summary_snapshots
+                        (id, meeting_id, summary_type, time_start, time_end, language, content, source_segment_ids, is_latest, translations, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (snap.id, snap.meeting_id, snap.summary_type, snap.time_start, snap.time_end, snap.language, snap.content,
+                         json.dumps(snap.source_segment_ids), 1, json.dumps(snap.translations), _iso(snap.created_at)))
+                self._conn.execute("UPDATE final_summary_jobs SET status='succeeded', error=NULL, updated_at=? WHERE id=?", (_iso(_utc_now()), job_id))
+                self._conn.commit()
+                return True
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def close(self) -> None:
         with self._lock:
@@ -257,12 +361,19 @@ class Storage:
             self._conn.commit()
 
     def insert_segment(self, seg: TranscriptSegment) -> None:
+        if seg.status != "final":
+            raise ValueError("Only final transcript segments may be persisted")
         with self._lock:
             self._conn.execute(
                 """
-                INSERT OR REPLACE INTO transcript_segments
-                                    (id, meeting_id, start_time, end_time, text, original_language, speaker_id, confidence, quality, translations, created_at)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO transcript_segments
+                    (id, meeting_id, start_time, end_time, text, original_language, speaker_id, confidence, quality, translations, created_at, revision, sequence)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET start_time=excluded.start_time, end_time=excluded.end_time,
+                    text=excluded.text, original_language=excluded.original_language, speaker_id=excluded.speaker_id,
+                    confidence=excluded.confidence, quality=excluded.quality, translations=excluded.translations,
+                    created_at=excluded.created_at, revision=excluded.revision, sequence=excluded.sequence
+                WHERE excluded.meeting_id = transcript_segments.meeting_id AND excluded.revision > transcript_segments.revision
                 """,
                 (
                     seg.id,
@@ -276,6 +387,8 @@ class Storage:
                     seg.quality,
                     json.dumps(dict(seg.translations)),
                     _iso(seg.created_at),
+                    seg.revision,
+                    seg.sequence,
                 ),
             )
             self._conn.commit()
@@ -297,8 +410,8 @@ class Storage:
         with self._lock:
             rows = self._conn.execute(
                 """
-                SELECT id, meeting_id, start_time, end_time, text, original_language, speaker_id, confidence, quality, translations, created_at
-                FROM transcript_segments WHERE meeting_id = ? ORDER BY start_time ASC
+                SELECT id, meeting_id, start_time, end_time, text, original_language, speaker_id, confidence, quality, translations, created_at, revision, sequence
+                FROM transcript_segments WHERE meeting_id = ? ORDER BY start_time ASC, sequence ASC, id ASC
                 """,
                 (meeting_id,),
             ).fetchall()
@@ -315,6 +428,8 @@ class Storage:
                 quality=r[8],
                 translations=json.loads(r[9] or "{}"),
                 created_at=datetime.fromisoformat(r[10]),
+                revision=r[11],
+                sequence=r[12],
             )
             for r in rows
         ]

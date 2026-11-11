@@ -1,6 +1,6 @@
 // Thin fetch wrappers over the backend's read-only/validation endpoints.
 
-import type { ExportMeetingResponse, Note, ReportRevision, SummarySnapshot, TranscriptSegment } from "../types";
+import type { ExportMeetingResponse, FinalSummaryJob, Note, ReportRevision, SummarySnapshot, TranscriptSegment } from "../types";
 
 function httpBase(): string {
   return window.meetingbro?.backendHttp ?? "http://127.0.0.1:8765";
@@ -19,6 +19,9 @@ export interface AudioDevices {
 }
 
 export interface BackendConfig {
+  whisper_engine: string;
+  metal_available: boolean;
+  whisper_cpp_available: boolean;
   whisper_size: string;
   whisper_device: string;
   whisper_compute_type: string;
@@ -90,6 +93,19 @@ export async function fetchMeetingReports(id: string): Promise<ReportRevision[]>
   return res.json();
 }
 
+export async function fetchFinalSummaryJob(id: string): Promise<FinalSummaryJob | null> {
+  const res = await fetch(`${httpBase()}/meetings/${encodeURIComponent(id)}/final-summary-job`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`final summary job ${res.status}`);
+  return res.json();
+}
+
+export async function retryFinalSummaryJob(id: string): Promise<FinalSummaryJob> {
+  const res = await fetch(`${httpBase()}/meetings/${encodeURIComponent(id)}/final-summary-job/retry`, { method: "POST" });
+  if (!res.ok) throw new Error(`retry final summary ${res.status}`);
+  return res.json();
+}
+
 export async function generateMeetingReport(id: string): Promise<ReportRevision> {
   const res = await fetch(`${httpBase()}/meetings/${encodeURIComponent(id)}/reports/generate`, { method: "POST" });
   if (!res.ok) throw new Error(`report generation ${res.status}`);
@@ -124,5 +140,11 @@ export async function testLlm(input: { api_key: string; base_url?: string; model
     body: JSON.stringify(input),
   });
   if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+  return res.json();
+}
+
+export async function fetchOllamaModels(): Promise<{ok: boolean; models: string[]; error?: string}> {
+  const res = await fetch(`${httpBase()}/config/ollama-models`);
+  if (!res.ok) throw new Error(`Ollama models HTTP ${res.status}`);
   return res.json();
 }

@@ -204,9 +204,11 @@ class BackendSupervisor {
       return;
     }
 
-    this.child.stdout.on("data", (d) => this._appendLog(d.toString().trimEnd()));
-    this.child.stderr.on("data", (d) => this._appendLog(d.toString().trimEnd()));
-    this.child.on("exit", (code, signal) => {
+    const child = this.child;
+    child.stdout.on("data", (d) => this._appendLog(d.toString().trimEnd()));
+    child.stderr.on("data", (d) => this._appendLog(d.toString().trimEnd()));
+    child.on("exit", (code, signal) => {
+      if (this.child !== child) return;
       this.childExited = true;
       this._appendLog(`[backend] process exited code=${code} signal=${signal}`);
       if (!this.quitting && this.state !== "ready") {
@@ -238,7 +240,7 @@ class BackendSupervisor {
           return;
         }
         // alive but model still loading/downloading
-        this._emit("downloading-model", "Preparing the speech model (first run may download ~460 MB)…");
+        this._emit("downloading-model", "Loading the local speech models…");
       }
       await sleep(HEALTH_POLL_INTERVAL_MS);
     }
@@ -246,7 +248,8 @@ class BackendSupervisor {
 
   _killTree() {
     if (!this.child || this.childExited) return;
-    const pid = this.child.pid;
+    const child = this.child;
+    const pid = child.pid;
     if (process.platform === "win32") {
       try {
         spawn("taskkill", ["/F", "/T", "/PID", String(pid)], { windowsHide: true });
@@ -259,11 +262,11 @@ class BackendSupervisor {
       }
     } else {
       try {
-        this.child.kill("SIGTERM");
+        child.kill("SIGTERM");
         setTimeout(() => {
-          if (!this.childExited) {
+          if (child.exitCode === null && child.signalCode === null) {
             try {
-              this.child.kill("SIGKILL");
+              child.kill("SIGKILL");
             } catch {
               /* ignore */
             }
@@ -285,7 +288,7 @@ class BackendSupervisor {
     }
     this._killTree();
     // Give the tree a moment to exit so a follow-up restart binds the port cleanly.
-    for (let i = 0; i < 20 && this.child && !this.childExited; i += 1) {
+    for (let i = 0; i < 60 && this.child && !this.childExited; i += 1) {
       await sleep(100);
     }
     this._emit("stopped");

@@ -29,6 +29,21 @@ class ASRAdapter(ABC):
     first-class targets; other languages may be returned as ``"unknown"``.
     """
 
+    def initialize(self) -> None:
+        """Load reusable model resources when an adapter supports eager loading."""
+        loader = getattr(self, "ensure_loaded", None)
+        if loader is not None:
+            loader()
+
+    def reset_session(self) -> None:
+        """Reset session-specific state without discarding a shared model."""
+
+    def shutdown(self) -> None:
+        """Release resources when the application, not a session, stops."""
+        close = getattr(self, "close", None)
+        if close is not None:
+            close()
+
     @abstractmethod
     def transcribe(
         self,

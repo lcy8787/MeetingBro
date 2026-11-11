@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   Note,
+  FinalSummaryJob,
   ReportRevision,
   ExportMeetingResponse,
   SessionEvent,
@@ -10,7 +11,7 @@ import type {
   SummaryType,
   TranscriptSegment,
 } from "../types";
-import { fetchMeetingReports } from "../system/backendApi";
+import { fetchFinalSummaryJob, fetchMeetingReports, fetchMeetingSummaries, fetchMeetingTranscript } from "../system/backendApi";
 
 const DEFAULT_WS = "ws://127.0.0.1:8765/ws/session";
 const VOCABULARY_STORAGE_KEY = "meetingbro.vocabulary";
@@ -31,6 +32,7 @@ function mergePreviewStack(stack: TranscriptSegment[], nextPreview: TranscriptSe
   if (!trimmedText) return stack;
 
   const withoutCoveredDuplicates = stack.filter((item) => {
+    if (item.id === nextPreview.id) return false;
     const sameWindow =
       Math.abs(item.start_time - nextPreview.start_time) < 0.12 &&
       Math.abs(item.end_time - nextPreview.end_time) < 0.12;
@@ -105,6 +107,7 @@ export interface SessionView {
   latestByType: Partial<Record<SummaryType, SummarySnapshot>>;
   historyByType: Partial<Record<SummaryType, SummarySnapshot[]>>;
   liveReport: ReportRevision | null;
+  finalJob: FinalSummaryJob | null;
   notes: Note[];
   lastError: string | null;
   lastErrorCode: string | null;
@@ -132,10 +135,13 @@ export function useSessionSocket(options: SessionOptions = {}): SessionView {
   const [latestByType, setLatestByType] = useState<SessionView["latestByType"]>({});
   const [historyByType, setHistoryByType] = useState<SessionView["historyByType"]>({});
   const [liveReport, setLiveReport] = useState<ReportRevision | null>(null);
+  const [finalJob, setFinalJob] = useState<FinalSummaryJob | null>(null);
   const [notes, setNotes] = useState<Note[]>([]);
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastErrorCode, setLastErrorCode] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const sessionTokenRef = useRef<string | null>(null);
+  const committedIdsRef = useRef<Set<string>>(new Set());
   const previewTimerRef = useRef<number | null>(null);
   const previewHoldTimerRef = useRef<number | null>(null);
   const queuedPreviewRef = useRef<TranscriptSegment | null>(null);
@@ -155,7 +161,7 @@ export function useSessionSocket(options: SessionOptions = {}): SessionView {
 
   const enabled = options.enabled ?? true;
   const source = options.source ?? "loopback";
-  const summaryLanguage = options.summaryLanguage ?? "en";
+  const summaryLanguage = options.summaryLanguage ?? "zh";
   const speechLanguage = options.speechLanguage ?? "auto";
   const subtitleLanguage = options.subtitleLanguage ?? "off";
   const runtimeProfile = options.runtimeProfile ?? "balanced";
@@ -383,6 +389,9 @@ export function useSessionSocket(options: SessionOptions = {}): SessionView {
       }
 
       const currentPreview = previewSegmentRef.current;
+      const latestVersion = [currentPreview, queuedPreviewRef.current].filter((item) => item?.id === nextPreview.id)
+        .reduce((revision, item) => Math.max(revision, item?.revision ?? 0), 0);
+      if (nextPreview.revision !== undefined && nextPreview.revision <= latestVersion) return;
       const currentText = currentPreview?.text.trim() ?? "";
       const nextText = nextPreview.text.trim();
       const currentWindow = currentPreview
@@ -444,6 +453,7 @@ export function useSessionSocket(options: SessionOptions = {}): SessionView {
     setLastError(null);
     setLastErrorCode(null);
     setSegments([]);
+    committedIdsRef.current.clear();
     setElapsedSeconds(0);
     setSessionStats(null);
     clearQueuedPreview();
@@ -456,6 +466,7 @@ export function useSessionSocket(options: SessionOptions = {}): SessionView {
     setLatestByType({});
     setHistoryByType({});
     setLiveReport(null);
+    setFinalJob(null);
     setNotes([]);
     setMeetingId(null);
     setSessionStartedAt(null);
@@ -468,116 +479,177 @@ export function useSessionSocket(options: SessionOptions = {}): SessionView {
     if (loopbackDevice) params.set("loopback_device", loopbackDevice);
     const vocabulary = window.localStorage.getItem(VOCABULARY_STORAGE_KEY)?.trim();
     if (vocabulary) params.set("vocabulary_hint", vocabulary);
-    const url = `${base}/ws/session?${params.toString()}`;
-    const ws = new WebSocket(url.startsWith("ws") ? url : DEFAULT_WS);
-    wsRef.current = ws;
-
-    ws.onopen = () => setConnected(true);
-    ws.onclose = () => {
-      setConnected(false);
-      setState("disconnected");
-    };
-    ws.onerror = () => setLastError("websocket error - check that the backend is running and the selected audio source is available");
-    ws.onmessage = (ev) => {
-      try {
-        const msg = JSON.parse(ev.data) as SessionEvent;
-        switch (msg.type) {
-          case "session_state":
-            setState(msg.payload.state);
-            setMeetingId(msg.payload.meeting_id);
-            setElapsedSeconds(msg.payload.elapsed_seconds);
-            setSessionStats(msg.payload);
-            if (msg.payload.state === "running") {
-              setSessionStartedAt((prev) => prev ?? new Date().toISOString());
-            }
-            break;
-          case "transcript_segment":
-            clearPreviewHold();
-            if (queuedPreviewRef.current && isPreviewCoveredByFormal(queuedPreviewRef.current, msg.payload)) {
-              clearQueuedPreview();
-            }
-            if (previewSegmentRef.current && isPreviewCoveredByFormal(previewSegmentRef.current, msg.payload)) {
-              clearStreaming();
-            }
-            setPreviewSegment((prev) => {
-              if (!prev) return prev;
-              const matchesCommitted =
-                prev.text.trim() === msg.payload.text.trim() &&
-                Math.abs(prev.start_time - msg.payload.start_time) < 0.01 &&
-                Math.abs(prev.end_time - msg.payload.end_time) < 0.01;
-              if (matchesCommitted) {
-                setIsExperimentalPreview(false);
-                holdCommittedPreview(msg.payload);
-                return msg.payload;
-              }
-              if (isPreviewCoveredByFormal(prev, msg.payload)) {
-                setIsExperimentalPreview(false);
-                return null;
-              }
-              return prev;
-            });
-            departPreviewSegments(msg.payload);
-            setSegments((prev) => [...prev, msg.payload]);
-            break;
-          case "transcript_segment_removed":
-            setSegments((prev) => prev.filter((s) => s.id !== msg.payload.segment_id));
-            break;
-          case "transcript_translation":
-            setSegments((prev) => prev.map((segment) => {
-              if (segment.id !== msg.payload.segment_id) {
-                return segment;
-              }
-              return {
-                ...segment,
-                translations: {
-                  ...segment.translations,
-                  [msg.payload.language]: msg.payload.text,
-                },
-              };
-            }));
-            break;
-          case "transcript_preview":
-            setIsExperimentalPreview(msg.payload.preview_is_experimental ?? false);
-            schedulePreviewUpdate(msg.payload.segment);
-            break;
-          case "summary_snapshot":
-            setLatestByType((prev) => ({
-              ...prev,
-              [msg.payload.summary_type]: msg.payload,
-            }));
-            setHistoryByType((prev) => {
-              const existing = prev[msg.payload.summary_type] ?? [];
-              if (existing.some((snap) => snap.id === msg.payload.id)) {
-                return prev;
-              }
-              return {
-                ...prev,
-                [msg.payload.summary_type]: [...existing, msg.payload],
-              };
-            });
-            break;
-          case "report_revision":
-            setLiveReport((previous) => !previous || previous.report_id !== msg.payload.report_id || msg.payload.revision > previous.revision ? msg.payload : previous);
-            break;
-          case "note_saved":
-            setNotes((prev) => [...prev, msg.payload]);
-            break;
-          case "error":
-            setLastError(msg.payload.message);
-            setLastErrorCode(msg.payload.code);
-            break;
+    // Keep the same unguessable token for the lifetime of this recording only.
+    const sessionToken = `${crypto.randomUUID()}${crypto.randomUUID()}`;
+    sessionTokenRef.current = sessionToken;
+    params.set("session_token", sessionToken);
+    let disposed = false;
+    let reconnectTimer: number | null = null;
+    let activeSocket: WebSocket | null = null;
+    let reconnectAttempts = 0;
+    const connect = (resume: boolean) => {
+      const attemptParams = new URLSearchParams(params);
+      if (resume) attemptParams.set("reconnect", "true");
+      const url = `${base}/ws/session?${attemptParams.toString()}`;
+      const ws = new WebSocket(url.startsWith("ws") ? url : DEFAULT_WS);
+      activeSocket = ws;
+      wsRef.current = ws;
+      ws.onopen = () => { reconnectAttempts = 0; setConnected(true); };
+      ws.onclose = (event) => {
+        if (disposed || activeSocket !== ws) return;
+        setConnected(false);
+        setState("disconnected");
+        if (event.code === 4404 || event.code === 4400) {
+          setLastError("The previous recording session is no longer available. Start a new session after reviewing the saved meeting.");
+          return;
         }
-      } catch (e) {
-        setLastError(`parse error: ${(e as Error).message}`);
-      }
+        const delay = Math.min(5000, 500 * 2 ** Math.min(reconnectAttempts++, 4));
+        reconnectTimer = window.setTimeout(() => connect(true), delay);
+      };
+      ws.onerror = () => setLastError("websocket error - attempting to reconnect");
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data) as SessionEvent;
+          switch (msg.type) {
+            case "session_sync": {
+              const snapshot = msg.payload;
+              setLastError(null);
+              setLastErrorCode(null);
+              setState(snapshot.state.state);
+              setMeetingId(snapshot.state.meeting_id);
+              setElapsedSeconds(snapshot.state.elapsed_seconds);
+              setSessionStats(snapshot.state);
+              committedIdsRef.current = new Set(snapshot.segments.map((segment) => segment.id));
+              setSegments(snapshot.segments);
+              setNotes(snapshot.notes);
+              setLiveReport(snapshot.report);
+              setLatestByType(() => {
+                const latest: SessionView["latestByType"] = {};
+                for (const item of snapshot.snapshots) latest[item.summary_type] = item;
+                return latest;
+              });
+              setHistoryByType(() => {
+                const history: SessionView["historyByType"] = {};
+                for (const item of snapshot.snapshots) history[item.summary_type] = [...(history[item.summary_type] ?? []), item];
+                return history;
+              });
+              clearQueuedPreview();
+              clearStreaming();
+              setPreviewSegment(null);
+              setPreviewSegments([]);
+              if (snapshot.preview && !committedIdsRef.current.has(snapshot.preview.id)) schedulePreviewUpdate(snapshot.preview);
+              break;
+            }
+            case "session_state":
+              setState(msg.payload.state);
+              setMeetingId(msg.payload.meeting_id);
+              setElapsedSeconds(msg.payload.elapsed_seconds);
+              setSessionStats(msg.payload);
+              if (msg.payload.state === "running") {
+                setSessionStartedAt((prev) => prev ?? new Date().toISOString());
+              }
+              break;
+            case "transcript_segment":
+              committedIdsRef.current.add(msg.payload.id);
+              clearPreviewHold();
+              if (queuedPreviewRef.current && isPreviewCoveredByFormal(queuedPreviewRef.current, msg.payload)) {
+                clearQueuedPreview();
+              }
+              if (previewSegmentRef.current && isPreviewCoveredByFormal(previewSegmentRef.current, msg.payload)) {
+                clearStreaming();
+              }
+              setPreviewSegment((prev) => {
+                if (!prev) return prev;
+                const matchesCommitted =
+                  prev.text.trim() === msg.payload.text.trim() &&
+                  Math.abs(prev.start_time - msg.payload.start_time) < 0.01 &&
+                  Math.abs(prev.end_time - msg.payload.end_time) < 0.01;
+                if (matchesCommitted) {
+                  setIsExperimentalPreview(false);
+                  holdCommittedPreview(msg.payload);
+                  return msg.payload;
+                }
+                if (isPreviewCoveredByFormal(prev, msg.payload)) {
+                  setIsExperimentalPreview(false);
+                  return null;
+                }
+                return prev;
+              });
+              departPreviewSegments(msg.payload);
+              setSegments((prev) => {
+                const existing = prev.find((segment) => segment.id === msg.payload.id);
+                if (existing && (existing.revision ?? 1) >= (msg.payload.revision ?? 1)) return prev;
+                return [...prev.filter((segment) => segment.id !== msg.payload.id), msg.payload]
+                  .sort((a, b) => a.start_time - b.start_time || (a.sequence ?? 0) - (b.sequence ?? 0));
+              });
+              break;
+            case "transcript_segment_removed":
+              setSegments((prev) => prev.filter((s) => s.id !== msg.payload.segment_id));
+              break;
+            case "transcript_translation":
+              setSegments((prev) => prev.map((segment) => {
+                if (segment.id !== msg.payload.segment_id) {
+                  return segment;
+                }
+                return {
+                  ...segment,
+                  translations: {
+                    ...segment.translations,
+                    [msg.payload.language]: msg.payload.text,
+                  },
+                };
+              }));
+              break;
+            case "transcript_preview":
+              if (msg.payload.segment && committedIdsRef.current.has(msg.payload.segment.id)) break;
+              setIsExperimentalPreview(msg.payload.preview_is_experimental ?? false);
+              schedulePreviewUpdate(msg.payload.segment);
+              break;
+            case "summary_snapshot":
+              setLatestByType((prev) => ({
+                ...prev,
+                [msg.payload.summary_type]: msg.payload,
+              }));
+              setHistoryByType((prev) => {
+                const existing = prev[msg.payload.summary_type] ?? [];
+                if (existing.some((snap) => snap.id === msg.payload.id)) {
+                  return prev;
+                }
+                return {
+                  ...prev,
+                  [msg.payload.summary_type]: [...existing, msg.payload],
+                };
+              });
+              break;
+            case "report_revision":
+              setLiveReport((previous) => !previous || previous.report_id !== msg.payload.report_id || msg.payload.revision > previous.revision ? msg.payload : previous);
+              break;
+            case "final_summary_job":
+              setFinalJob(msg.payload);
+              break;
+            case "note_saved":
+              setNotes((prev) => [...prev, msg.payload]);
+              break;
+            case "error":
+              setLastError(msg.payload.message);
+              setLastErrorCode(msg.payload.code);
+              break;
+          }
+        } catch (e) {
+          setLastError(`parse error: ${(e as Error).message}`);
+        }
+      };
     };
+    connect(false);
 
     return () => {
+      disposed = true;
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       clearQueuedPreview();
       clearPreviewHold();
       clearStreaming();
       clearDepartingPreviews();
-      ws.close();
+      activeSocket?.close();
     };
   }, [enabled]);
 
@@ -606,6 +678,14 @@ export function useSessionSocket(options: SessionOptions = {}): SessionView {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "stop" }));
+    } else if (sessionTokenRef.current) {
+      const base = window.meetingbro?.backendHttp ?? "http://127.0.0.1:8765";
+      void fetch(`${base}/sessions/stop`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_token: sessionTokenRef.current }),
+      }).then((response) => {
+        if (!response.ok && response.status !== 404) throw new Error(`HTTP ${response.status}`);
+      }).catch(() => setLastError("Could not contact the backend to stop recording; it will stop when the reconnection window expires."));
     }
   }, []);
 
@@ -723,6 +803,35 @@ export function useSessionSocket(options: SessionOptions = {}): SessionView {
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [meetingId, connected]);
 
+  useEffect(() => {
+    if (!meetingId || enabled || finalJob?.status === "succeeded" || finalJob?.status === "failed") return;
+    let cancelled = false;
+    const sync = async () => {
+      try {
+        const job = await fetchFinalSummaryJob(meetingId);
+        if (cancelled || !job) return;
+        if (job.status === "succeeded") {
+          const [segments, snapshots, reports] = await Promise.all([
+            fetchMeetingTranscript(meetingId), fetchMeetingSummaries(meetingId), fetchMeetingReports(meetingId),
+          ]);
+          if (cancelled) return;
+          setSegments(segments);
+          setLatestByType((current) => {
+            const next = { ...current };
+            for (const snapshot of snapshots) next[snapshot.summary_type] = snapshot;
+            return next;
+          });
+          const report = reports.filter((item) => item.report_type === "live").at(-1);
+          if (report) setLiveReport(report);
+        }
+        if (!cancelled) setFinalJob(job);
+      } catch { /* Continue polling while the backend is temporarily unavailable. */ }
+    };
+    void sync();
+    const timer = window.setInterval(() => { void sync(); }, 2000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [meetingId, enabled, finalJob?.status]);
+
   return {
     connected,
     state,
@@ -740,6 +849,7 @@ export function useSessionSocket(options: SessionOptions = {}): SessionView {
     latestByType,
     historyByType,
     liveReport,
+    finalJob,
     notes,
     lastError,
     lastErrorCode,

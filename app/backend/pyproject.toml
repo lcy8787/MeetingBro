@@ -21,6 +21,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+mlx = [
+  "mlx-qwen3-asr==0.4.4; platform_system == 'Darwin' and platform_machine == 'arm64'",
+  "huggingface-hub>=0.24; platform_system == 'Darwin' and platform_machine == 'arm64'",
+]
 dev = [
   "pytest>=8",
   "httpx>=0.27",

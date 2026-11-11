@@ -5,6 +5,7 @@ from collections import Counter
 from typing import Sequence
 
 from ..schemas import LanguageCode, TranscriptSegment
+from ..text_locale import to_traditional
 from .base import Summarizer, SummaryKind
 
 
@@ -103,6 +104,17 @@ class HeuristicSummarizer(Summarizer):
         self._final = max_final_sentences
 
     def summarize(
+        self, segments: Sequence[TranscriptSegment], *, kind: SummaryKind,
+        language: LanguageCode, previous_summary: str | None = None,
+        vocabulary: str | None = None,
+    ) -> str:
+        result = self._summarize(
+            segments, kind=kind, language=language,
+            previous_summary=previous_summary, vocabulary=vocabulary,
+        )
+        return to_traditional(result) if language == "zh" else result
+
+    def _summarize(
         self,
         segments: Sequence[TranscriptSegment],
         *,
@@ -111,6 +123,19 @@ class HeuristicSummarizer(Summarizer):
         previous_summary: str | None = None,
         vocabulary: str | None = None,
     ) -> str:
+        labels = {
+            "Clean Conversation": "整理後對話", "Uncertain / Conflicts": "疑義／衝突",
+            "Not evaluated in heuristic mode": "離線摘錄模式未評估",
+            "Recent discussion": "近期討論", "Meeting so far": "會議進展",
+            "Meeting recap": "會議回顧", "Topics": "議題", "Decisions": "決議",
+            "Action Items": "待辦事項", "Open Questions": "待釐清問題",
+            "Important Facts": "重要事實", "Meeting State": "會議狀態",
+            "Key terms": "關鍵詞", "None yet": "暫無",
+            "Compressed meeting memory": "濃縮會議記憶",
+        } if language == "zh" else {}
+        def label(text: str) -> str:
+            return labels.get(text, text)
+
         if not segments:
             return ""
 
@@ -125,25 +150,25 @@ class HeuristicSummarizer(Summarizer):
                 if s.text.strip()
             ]
             return "\n".join([
-                "## Clean Conversation",
-                *(lines or ["- None yet"]),
+                f"## {label('Clean Conversation')}",
+                *(lines or [f"- {label('None yet')}"]),
                 "",
-                "## Uncertain / Conflicts",
-                "- Not evaluated in heuristic mode",
+                f"## {label('Uncertain / Conflicts')}",
+                f"- {label('Not evaluated in heuristic mode')}",
             ])
 
         if kind == "rolling_summary":
             max_s = self._rolling
-            label = "Recent discussion"
+            heading = label("Recent discussion")
         elif kind == "meeting_memory":
             max_s = self._cumulative
-            label = "## Topics"
+            heading = f"## {label('Topics')}"
         elif kind == "cumulative_meeting_summary":
             max_s = self._cumulative
-            label = "Meeting so far"
+            heading = label("Meeting so far")
         else:
             max_s = self._final
-            label = "Meeting recap"
+            heading = label("Meeting recap")
 
         # Guess a language for stopword handling. We use the majority-vote from
         # segments rather than the requested output language, because the
@@ -161,39 +186,39 @@ class HeuristicSummarizer(Summarizer):
 
         if kind == "meeting_memory":
             parts = [
-                f"## Topics\n- {body}" if body else "## Topics",
-                "## Decisions",
-                "## Action Items",
-                "## Open Questions",
-                "## Important Facts",
+                f"## {label('Topics')}\n- {body}" if body else f"## {label('Topics')}",
+                f"## {label('Decisions')}",
+                f"## {label('Action Items')}",
+                f"## {label('Open Questions')}",
+                f"## {label('Important Facts')}",
             ]
         elif kind == "cumulative_meeting_summary":
-            state_lines = _bullet_lines([body] if body else [])
-            decision_lines = _bullet_lines([])
-            action_lines = _bullet_lines([f"Key terms: {keyword_line}"] if keyword_line else [])
-            open_question_lines = _bullet_lines([])
+            state_lines = _bullet_lines([body] if body else [], fallback=label("None yet"))
+            decision_lines = _bullet_lines([], fallback=label("None yet"))
+            action_lines = _bullet_lines([f"{label('Key terms')}: {keyword_line}"] if keyword_line else [], fallback=label("None yet"))
+            open_question_lines = _bullet_lines([], fallback=label("None yet"))
             parts = [
-                "## Meeting State",
+                f"## {label('Meeting State')}",
                 *state_lines,
                 "",
-                "## Decisions",
+                f"## {label('Decisions')}",
                 *decision_lines,
                 "",
-                "## Action Items",
+                f"## {label('Action Items')}",
                 *action_lines,
                 "",
-                "## Open Questions",
+                f"## {label('Open Questions')}",
                 *open_question_lines,
             ]
         else:
-            parts = [f"{label}: {body}" if body else label]
+            parts = [f"{heading}: {body}" if body else heading]
         if keyword_line:
             if kind == "meeting_memory":
-                parts.append(f"- Key terms: {keyword_line}")
+                parts.append(f"- {label('Key terms')}: {keyword_line}")
             elif kind not in {"cumulative_meeting_summary"}:
-                parts.append(f"Key terms: {keyword_line}")
+                parts.append(f"{label('Key terms')}: {keyword_line}")
         if kind in {"cumulative_meeting_summary", "final_summary"} and previous_summary:
-            parts.append(f"(Compressed meeting memory: {previous_summary[:240]})")
+            parts.append(f"({label('Compressed meeting memory')}: {previous_summary[:240]})")
         return "\n".join(parts)
 
     def finalize_meeting(

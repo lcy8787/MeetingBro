@@ -56,63 +56,16 @@ cleanup() {
 
 trap 'cleanup; exit 0' INT TERM
 
-# Start backend
-echo "==> Starting backend on port ${BACKEND_PORT}..."
-cd "${REPO_ROOT}/app/backend"
-source .venv/bin/activate
-python -m meetingbro.main &
-BACKEND_PID=$!
-
-echo "Backend started (PID: ${BACKEND_PID})"
-
-# Wait for backend to be ready
-waited=0
-ready=0
-while [ "${waited}" -lt 30 ]; do
-    if ! kill -0 "${BACKEND_PID}" 2>/dev/null; then
-        echo "Error: Backend process exited unexpectedly."
-        wait "${BACKEND_PID}" || true
-        exit 1
-    fi
-
-    if curl -sf "http://127.0.0.1:${BACKEND_PORT}/health" >/dev/null 2>&1; then
-        ready=1
-        break
-    fi
-
-    sleep 1
-    waited=$((waited + 1))
-done
-
-if [ "${ready}" -eq 0 ]; then
-    echo "Warning: Backend health check did not respond within 30 seconds. Continuing anyway..."
-else
-    echo "Backend is ready."
-fi
-
-# Start frontend
-echo "==> Starting frontend..."
+# Electron owns the backend lifecycle so Settings can really restart it.
+# It validates the venv, starts Python, waits for local models, and shuts down
+# its child on quit. An externally started backend can still be attached.
+echo "==> Starting MeetingBro desktop and its managed backend..."
 cd "${REPO_ROOT}/app/frontend"
 npm run dev &
 FRONTEND_PID=$!
-
-echo "Frontend started (PID: ${FRONTEND_PID})"
-
-# Keep running until one of the processes exits
-while true; do
-    if ! kill -0 "${BACKEND_PID}" 2>/dev/null; then
-        echo "Backend process exited."
-        wait "${BACKEND_PID}" || true
-        cleanup
-        exit 1
-    fi
-
-    if ! kill -0 "${FRONTEND_PID}" 2>/dev/null; then
-        echo "Frontend process exited."
-        wait "${FRONTEND_PID}" || true
-        cleanup
-        exit 1
-    fi
-
-    sleep 1
-done
+set +e
+wait "${FRONTEND_PID}"
+FRONTEND_EXIT=$?
+set -e
+cleanup
+exit "${FRONTEND_EXIT}"

@@ -95,6 +95,29 @@ These scripts will:
 
 Press `Ctrl+C` in the terminal to stop both services together.
 
+### Qwen3-ASR on Apple Silicon
+
+After the normal backend installation, install the optional local Qwen3-ASR
+engine and its 0.6B model:
+
+```bash
+./scripts/install_qwen3_mlx.sh
+```
+
+The installer downloads the Apache-2.0
+[`moona3k/mlx-qwen3-asr-0.6b-4bit`](https://huggingface.co/moona3k/mlx-qwen3-asr-0.6b-4bit)
+checkpoint (about 538 MB) into `models/Qwen3-ASR-0.6B-4bit`; its text
+decoder uses 4-bit weights and its audio encoder uses 8-bit weights. Restart
+MeetingBro after installation. On Apple Silicon, **Auto** selects the local
+Qwen3 MLX engine when the package and complete model files are present. The
+desktop Settings menu can also explicitly select Qwen3 MLX or a Whisper
+fallback. Transcription uses the local model and does not require a network
+connection; downloading the package and model requires network access.
+
+To use a different compatible local model directory, set
+`MEETINGBRO_QWEN3_MLX_MODEL` before starting the backend. If the model cannot
+be loaded, check the backend log and select a Whisper engine in Settings.
+
 > **Port note:** MeetingBro backend listens on **8765** by default. The scripts let you override this with the `BACKEND_PORT` environment variable, but the frontend code also defaults to 8765. Unless you intentionally change the frontend configuration, leave `BACKEND_PORT` unchanged.
 
 ### Configure inside the app (no terminal, no .env editing)

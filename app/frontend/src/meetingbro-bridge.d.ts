@@ -28,15 +28,20 @@ export interface AppSettings {
   firstRunComplete: boolean;
   backendPort: number;
   llm: LlmSettings;
+  liveSummariesEnabled: boolean;
+  finalSummaryEnabled: boolean;
+  llmResourceMode: "realtime" | "balanced" | "post_recording";
+  whisperEngine: "auto" | "faster-whisper" | "whisper-cpp" | "qwen3-mlx";
   whisperSize: string;
   whisperDevice: string;
-  previewBackend: "qwen3" | "shared";
+  previewBackend: "qwen3" | "shared" | "whisper-streaming";
 }
 
 export interface SaveSettingsResult {
   settings: AppSettings;
   startupChanged: boolean;
   restarted: boolean;
+  requiresManualRestart?: boolean;
   backend: BackendInfo;
 }
 

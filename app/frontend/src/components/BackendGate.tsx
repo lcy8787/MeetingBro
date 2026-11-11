@@ -1,3 +1,4 @@
+import { t, useI18n } from "../i18n";
 import type { BackendState } from "../meetingbro-bridge";
 
 interface BackendGateProps {
@@ -17,15 +18,16 @@ const TITLES: Partial<Record<BackendState, string>> = {
 };
 
 const SUBTITLES: Partial<Record<BackendState, string>> = {
-  "downloading-model": "First run downloads the speech model (~460 MB). This can take a few minutes — it only happens once.",
+  "downloading-model": "Loading installed speech models. Model downloads are a separate setup step.",
 };
 
 // Full-screen overlay shown until the backend is ready, so a non-technical user
 // never faces a silent dead connection. Returns null when ready (App renders).
 export function BackendGate({ state, detail, logTail, onRetry, onOpenLog }: BackendGateProps) {
+  useI18n();
   const isError = state === "failed" || state === "stopped";
   const isWorking = state === "locating" || state === "starting" || state === "downloading-model";
-  const title = TITLES[state] ?? "Connecting…";
+  const title = TITLES[state] ?? t("Connecting…");
   const subtitle = SUBTITLES[state];
 
   return (
@@ -33,18 +35,16 @@ export function BackendGate({ state, detail, logTail, onRetry, onOpenLog }: Back
       <div className="backend-gate__card">
         {isWorking && <div className="backend-gate__spinner" aria-hidden="true" />}
         {isError && <div className="backend-gate__icon" aria-hidden="true">⚠️</div>}
-        <h1 className="backend-gate__title">{title}</h1>
-        {subtitle && <p className="backend-gate__subtitle">{subtitle}</p>}
-        {detail && <p className="backend-gate__detail">{detail}</p>}
+        <h1 className="backend-gate__title">{t(title)}</h1>
+        {subtitle && <p className="backend-gate__subtitle">{t(subtitle)}</p>}
+        {detail && <p className="backend-gate__detail">{t(detail)}</p>}
 
         {isError && (
           <div className="backend-gate__actions">
             <button type="button" className="backend-gate__btn backend-gate__btn--primary" onClick={onRetry}>
-              Retry
-            </button>
+              {t("Retry")}</button>
             <button type="button" className="backend-gate__btn" onClick={onOpenLog}>
-              View log
-            </button>
+              {t("View log")}</button>
           </div>
         )}
 

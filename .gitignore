@@ -43,3 +43,9 @@ app/backend/*.egg-info/
 
 # Subagent-driven-development scratch (controller ledger)
 .superpowers/
+
+# Project-local native engines and build products
+.runtime/
+
+# macOS metadata
+.DS_Store

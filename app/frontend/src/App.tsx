@@ -1,3 +1,4 @@
+import { t, useI18n } from "./i18n";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import type { ExportMeetingResponse, SummarySnapshot, TranscriptSegment } from "./types";
@@ -89,7 +90,7 @@ function getConfidenceTone(confidence: number): "stable" | "soft" | "uncertain" 
 function getConfidenceLabel(confidence: number): string | null {
   const tone = getConfidenceTone(confidence);
   if (tone === "uncertain") return "uncertain";
-  if (tone === "soft") return "low conf";
+  if (tone === "soft") return t("low conf");
   return null;
 }
 
@@ -141,14 +142,14 @@ function getGainTone(
 function formatSourceLabel(source: string | null | undefined): string {
   switch (source) {
     case "mic":
-      return "Microphone";
+      return t("Microphone");
     case "loopback":
     case "system":
-      return "System Audio";
+      return t("System Audio");
     case "mixed":
-      return "System + Mic";
+      return t("System + Mic");
     case "sample":
-      return "Sample audio (demo)";
+      return t("Sample audio (demo)");
     default:
       return source ?? "—";
   }
@@ -157,27 +158,27 @@ function formatSourceLabel(source: string | null | undefined): string {
 function formatLanguageLabel(language: "zh" | "en" | "de" | null | undefined): string {
   switch (language) {
     case "zh":
-      return "Chinese";
+      return t("Chinese");
     case "en":
-      return "English";
+      return t("English");
     case "de":
-      return "German";
+      return t("German");
     default:
-      return "Off";
+      return t("Off");
   }
 }
 
 function formatRuntimeProfileLabel(profile: string | null | undefined): string {
   switch (profile) {
     case "summary_only":
-      return "Summary Only";
+      return t("Summary Only");
     case "performance":
     case "robust":
-      return "Performance";
+      return t("Performance");
     case "balanced":
-      return "Balanced";
+      return t("Balanced");
     default:
-      return profile ?? "Balanced";
+      return profile ?? t("Balanced");
   }
 }
 
@@ -210,18 +211,18 @@ function getMixedGainHint(
   activeSource: string | null | undefined,
 ): string {
   if (activeSource !== "mixed") {
-    return "mixed diagnostics appear when source is System + Mic";
+    return t("mixed diagnostics appear when source is System + Mic");
   }
   if (tone === "danger") {
     return "mic seems weak · consider raising MEETINGBRO_MIXED_MIC_GAIN";
   }
   if (tone === "warn") {
-    return "moderate mic compensation active · monitor voice clarity";
+    return t("moderate mic compensation active · monitor voice clarity");
   }
   if (tone === "ok") {
-    return "mic and system levels look balanced";
+    return t("mic and system levels look balanced");
   }
-  return "waiting for mixed-level diagnostics";
+  return t("waiting for mixed-level diagnostics");
 }
 
 function isNearBottom(element: HTMLDivElement): boolean {
@@ -258,6 +259,7 @@ function SummaryPanel({ title, subtitle, snapshot, history, sessionStartedAt, ac
 
   const bodyRef = useRef<HTMLDivElement>(null);
   const autoFollowRef = useRef(true);
+  useI18n();
   const [expanded, setExpanded] = useState(false);
   useEffect(() => {
     if (autoFollowRef.current && bodyRef.current) {
@@ -294,7 +296,7 @@ function SummaryPanel({ title, subtitle, snapshot, history, sessionStartedAt, ac
       }}
     >
       {displayedHistory.length === 0 ? (
-        "waiting for the first snapshot…"
+        t("waiting for the first snapshot…")
       ) : (
         displayedHistory.map((item, idx) => {
           const itemRange = formatApproxClockRange(sessionStartedAt, item.time_start, item.time_end);
@@ -323,24 +325,24 @@ function SummaryPanel({ title, subtitle, snapshot, history, sessionStartedAt, ac
   const footerJSX = (
     <footer>
       <button onClick={onRefresh} disabled={!onRefresh || refreshDisabled} className={refreshBusy ? "button-busy" : ""} aria-busy={refreshBusy}>
-        {refreshBusy ? "Refreshing…" : "Refresh"}
+        {refreshBusy ? t("Refreshing…") : t("Refresh")}
       </button>
-      <button onClick={onCopy} disabled={!latestSnapshot}>Copy Latest</button>
-      <button onClick={onExpand} disabled={!latestSnapshot}>Expand</button>
-      <button onClick={onSave} disabled={!latestSnapshot}>Save Latest</button>
+      <button onClick={onCopy} disabled={!latestSnapshot}>{t("Copy Latest")}</button>
+      <button onClick={onExpand} disabled={!latestSnapshot}>{t("Expand")}</button>
+      <button onClick={onSave} disabled={!latestSnapshot}>{t("Save Latest")}</button>
     </footer>
   );
 
   const modalJSX = expanded ? (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={`${title} history`} onClick={() => setExpanded(false)}>
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={t("{0} history", title)} onClick={() => setExpanded(false)}>
       <div className="modal modal--summary" onClick={(e) => e.stopPropagation()}>
         <div className="modal__header">
           <h2>{title} <span className="modal__range">{range}</span></h2>
-          <button type="button" className="modal__close" onClick={() => setExpanded(false)} aria-label="Close">×</button>
+          <button type="button" className="modal__close" onClick={() => setExpanded(false)} aria-label={t("Close")}>×</button>
         </div>
         <div className="modal__body summary-history">
           {displayedHistory.length === 0 ? (
-            "No snapshots yet."
+            t("No snapshots yet.")
           ) : (
             displayedHistory.map((item, idx) => (
               <article key={item.id} className="summary-history-item">
@@ -362,7 +364,7 @@ function SummaryPanel({ title, subtitle, snapshot, history, sessionStartedAt, ac
     return (
       <div className="workspace-tab-panel">
         <div className="workspace-tab-meta">
-          <span className="summary-meta">covered {relativeRange} · updated {createdAt}</span>
+          <span className="summary-meta">{t("covered")}{" "}{relativeRange} {" "}{t("· updated")}{" "}{createdAt}</span>
           <span className="range">{range}</span>
         </div>
         {bodyJSX}
@@ -378,7 +380,7 @@ function SummaryPanel({ title, subtitle, snapshot, history, sessionStartedAt, ac
         <div>
           <h2>{title}</h2>
           <p className="subtitle">{subtitle}</p>
-          <p className="summary-meta">covered {relativeRange} · updated {createdAt}</p>
+          <p className="summary-meta">{t("covered")}{" "}{relativeRange} {" "}{t("· updated")}{" "}{createdAt}</p>
         </div>
         <div className="range">{range}</div>
       </header>
@@ -390,9 +392,10 @@ function SummaryPanel({ title, subtitle, snapshot, history, sessionStartedAt, ac
 }
 
 export default function App() {
+  const { language: uiLanguage, setLanguage: setUiLanguage } = useI18n();
   const [source, setSource] = useState("mixed");
   const [speechLanguage, setSpeechLanguage] = useState("auto");
-  const [summaryLanguage, setSummaryLanguage] = useState("en");
+  const [summaryLanguage, setSummaryLanguage] = useState("zh");
   const [subtitleLanguage, setSubtitleLanguage] = useState("off");
   const [runtimeProfile, setRuntimeProfile] = useState("balanced");
   const [vocabulary, setVocabulary] = useState("");
@@ -419,10 +422,14 @@ export default function App() {
   const [audioDevice, setAudioDevice] = useState("");
   const [loopbackDevice, setLoopbackDevice] = useState("");
   const [audioDevices, setAudioDevices] = useState<AudioDevices | null>(null);
-  const { connected, state, meetingId, sessionStartedAt, elapsedSeconds, sessionStats, segments, previewSegment, previewSegments, isExperimentalPreview, previewDisplayText, previewIsStreaming, departingPreviewSegments, latestByType, historyByType, liveReport, notes, lastError, lastErrorCode, saveNote, saveBookmark, applyVocabulary, exportMeeting, requestSummary, pauseSession, resumeSession, stopSession } =
+  const { connected, state, meetingId, sessionStartedAt, elapsedSeconds, sessionStats, segments, previewSegment, previewSegments, isExperimentalPreview, previewDisplayText, previewIsStreaming, departingPreviewSegments, latestByType, historyByType, liveReport, finalJob, notes, lastError, lastErrorCode, saveNote, saveBookmark, applyVocabulary, exportMeeting, requestSummary, pauseSession, resumeSession, stopSession } =
     useSessionSocket({ enabled: sessionEnabled, source, speechLanguage, summaryLanguage, subtitleLanguage, runtimeProfile, audioDevice, loopbackDevice });
 
   const backend = useBackendStatus();
+
+  useEffect(() => {
+    if (state === "ended") setSessionEnabled(false);
+  }, [state]);
 
   // Load persisted device choices once, and fetch the device list when the
   // backend becomes ready.
@@ -506,7 +513,7 @@ export default function App() {
     setRefreshBaselineId(null);
   }, [latestByType, refreshBaselineId, refreshingSummary]);
 
-  const visibleSegments = useMemo(() => segments.slice(-200), [segments]);
+  const visibleSegments = useMemo(() => segments.slice(-200), [segments, uiLanguage]);
   const visibleBookmarks = useMemo(() => {
     if (visibleSegments.length === 0) {
       return [];
@@ -518,7 +525,7 @@ export default function App() {
       .filter((note) => note.source_type === "bookmark" && note.time_seconds != null)
       .filter((note) => (note.time_seconds ?? 0) >= firstVisibleStart && (note.time_seconds ?? 0) <= latestTimelineSeconds)
       .sort((left, right) => (left.time_seconds ?? 0) - (right.time_seconds ?? 0));
-  }, [elapsedSeconds, notes, visibleSegments]);
+  }, [elapsedSeconds, notes, visibleSegments, uiLanguage]);
   const transcriptTimelineItems = useMemo(() => {
     const items: Array<
       | { type: "segment"; segment: typeof visibleSegments[number] }
@@ -543,21 +550,21 @@ export default function App() {
     }
 
     return items;
-  }, [notes, visibleBookmarks, visibleSegments]);
-  const chapters = useMemo(() => chapterSnapshot ? parseSnapshotList(chapterSnapshot.content) : [], [chapterSnapshot]);
-  const actionItems = useMemo(() => actionItemSnapshot ? parseSnapshotList(actionItemSnapshot.content) : [], [actionItemSnapshot]);
+  }, [notes, visibleBookmarks, visibleSegments, uiLanguage]);
+  const chapters = useMemo(() => chapterSnapshot ? parseSnapshotList(chapterSnapshot.content) : [], [chapterSnapshot, uiLanguage]);
+  const actionItems = useMemo(() => actionItemSnapshot ? parseSnapshotList(actionItemSnapshot.content) : [], [actionItemSnapshot, uiLanguage]);
   const latestSegment = segments.at(-1);
   const [newSegmentOrders, setNewSegmentOrders] = useState<Record<string, number>>({});
   const segmentAnimationKnownIdsRef = useRef<Set<string>>(new Set());
   const latestVisualSegment = previewSegment ?? latestSegment;
   const handoffPreviewSegments = useMemo(
     () => [...departingPreviewSegments, ...previewSegments],
-    [departingPreviewSegments, previewSegments],
+    [departingPreviewSegments, previewSegments, uiLanguage],
   );
   const shouldShowPreviewStack = state === "running" || departingPreviewSegments.length > 0 || previewSegments.length > 0;
   const previewStackRevision = useMemo(
     () => handoffPreviewSegments.map((segment) => `${segment.id}:${segment.text}`).join("|"),
-    [handoffPreviewSegments],
+    [handoffPreviewSegments, uiLanguage],
   );
   const latestSegmentRevision = latestSegment ? `${latestSegment.id}:${latestSegment.text}` : "";
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -613,7 +620,7 @@ export default function App() {
       return null;
     }
     return Math.max(0, (nowMs - sessionStartMs) / 1000);
-  }, [elapsedSeconds, nowMs, sessionStartedAt]);
+  }, [elapsedSeconds, nowMs, sessionStartedAt, uiLanguage]);
 
   const committedLagSeconds = useMemo(() => {
     if (!latestSegment || state !== "running" || audioClockSeconds == null) {
@@ -624,14 +631,14 @@ export default function App() {
       return Math.max(0, committedAt - latestSegment.end_time);
     }
     return Math.max(0, audioClockSeconds - latestSegment.end_time);
-  }, [audioClockSeconds, latestSegment, state]);
+  }, [audioClockSeconds, latestSegment, state, uiLanguage]);
 
   const liveGapSeconds = useMemo(() => {
     if (!latestVisualSegment || state !== "running" || audioClockSeconds == null) {
       return null;
     }
     return Math.max(0, audioClockSeconds - latestVisualSegment.end_time);
-  }, [audioClockSeconds, latestVisualSegment, state]);
+  }, [audioClockSeconds, latestVisualSegment, state, uiLanguage]);
 
   const transcriptLagSeconds = liveGapSeconds ?? committedLagSeconds;
 
@@ -642,7 +649,7 @@ export default function App() {
       return null;
     }
     return Math.max(0, elapsedSeconds - lastBackpressure);
-  }, [elapsedSeconds, sessionStats?.last_backpressure_elapsed_seconds]);
+  }, [elapsedSeconds, sessionStats?.last_backpressure_elapsed_seconds, uiLanguage]);
   const retryTotal = sessionStats?.retry_windows_total ?? 0;
   const retryImproved = sessionStats?.retry_windows_improved ?? 0;
   const retryUnchanged = sessionStats?.retry_windows_unchanged ?? 0;
@@ -659,7 +666,7 @@ export default function App() {
   const activeRuntimeProfile = sessionStats?.runtime_profile ?? runtimeProfile;
   const summaryOnlyMode = activeRuntimeProfile === "summary_only";
   const activeHardwareProfile = sessionStats?.hardware_profile ?? "auto";
-  const activeHardwareSummary = sessionStats?.hardware_summary ?? "detecting local CPU/GPU profile";
+  const activeHardwareSummary = sessionStats?.hardware_summary ?? t("detecting local CPU/GPU profile");
   const computeCpuActive = sessionStats?.compute_cpu_active ?? false;
   const computeCpuAvailable = sessionStats?.compute_cpu_available ?? true;
   const computeCpuConfigured = sessionStats?.compute_cpu_configured ?? false;
@@ -670,17 +677,17 @@ export default function App() {
   const cpuChipTitle = computeCpuActive
     ? computeActivityLabel
     : computeCpuConfigured
-      ? "CPU is configured for MeetingBro and waiting for Qwen/CPU work"
+      ? t("CPU is configured for MeetingBro and waiting for Qwen/CPU work")
       : computeCpuAvailable
-        ? "CPU is available, but no CPU ASR task is currently assigned"
-        : "CPU is not available";
+        ? t("CPU is available, but no CPU ASR task is currently assigned")
+        : t("CPU is not available");
   const gpuChipTitle = computeGpuActive
     ? computeActivityLabel
     : computeGpuConfigured
-      ? "GPU is configured for MeetingBro and waiting for Whisper work"
+      ? t("GPU is configured for MeetingBro and waiting for Whisper work")
       : computeGpuAvailable
-        ? "GPU is available, but MeetingBro is currently configured to use CPU"
-        : "GPU is not available to the current Python ASR runtime";
+        ? t("GPU is available, but MeetingBro is currently configured to use CPU")
+        : t("GPU is not available to the current Python ASR runtime");
   const displayCpuActive = computeCpuActive || computeActivityHold.cpu;
   const displayGpuActive = computeGpuActive || computeActivityHold.gpu;
   const activeChunkSeconds = sessionStats?.audio_chunk_seconds ?? null;
@@ -725,7 +732,7 @@ export default function App() {
   const mixedGainTone = getGainTone(mixedEffectiveMicGain, mixedMicGain, activeSource);
   const mixedGainRatio =
     activeSource === "mixed"
-      ? `mic ${formatGain(mixedEffectiveMicGain)} vs system ${formatGain(mixedSystemGain)}`
+      ? t("mic {0} vs system {1}", formatGain(mixedEffectiveMicGain), formatGain(mixedSystemGain))
       : "—";
   const mixedGainHint = getMixedGainHint(mixedGainTone, activeSource);
   const activeSubtitleLanguage: "zh" | "en" | "de" | null = summaryOnlyMode || subtitleLanguage === "off"
@@ -742,7 +749,7 @@ export default function App() {
       }
       return revision + text.length + index + 1;
     }, 0);
-  }, [activeSubtitleLanguage, visibleSegments]);
+  }, [activeSubtitleLanguage, visibleSegments, uiLanguage]);
   const recentSpeechLanguages = useMemo(() => {
     const languages = new Set<string>();
     for (const segment of visibleSegments.slice(-24)) {
@@ -751,7 +758,7 @@ export default function App() {
       }
     }
     return languages;
-  }, [visibleSegments]);
+  }, [visibleSegments, uiLanguage]);
   const latestSubtitleText = activeSubtitleLanguage && latestSegment
     ? latestSegment.translations[activeSubtitleLanguage]
     : null;
@@ -760,26 +767,26 @@ export default function App() {
     : !latestSegment
       ? "waiting"
       : latestSegment.original_language === activeSubtitleLanguage
-        ? "same language"
+        ? t("same language")
         : latestSubtitleText && latestSubtitleText.trim()
           ? "translated"
           : "translating";
   const subtitleStatusDetail = activeSubtitleLanguage == null
-    ? "subtitles disabled"
+    ? t("subtitles disabled")
     : !latestSegment
-      ? `target ${formatLanguageLabel(activeSubtitleLanguage)} · waiting for transcript`
+      ? t("target {0} · waiting for transcript", formatLanguageLabel(activeSubtitleLanguage))
       : latestSegment.original_language === activeSubtitleLanguage
-        ? `latest segment already in ${formatLanguageLabel(activeSubtitleLanguage)}`
+        ? t("latest segment already in {0}", formatLanguageLabel(activeSubtitleLanguage))
         : latestSubtitleText && latestSubtitleText.trim()
-          ? `latest subtitle ready in ${formatLanguageLabel(activeSubtitleLanguage)}`
-          : `target ${formatLanguageLabel(activeSubtitleLanguage)} · translation pending`;
+          ? t("latest subtitle ready in {0}", formatLanguageLabel(activeSubtitleLanguage))
+          : t("target {0} · translation pending", formatLanguageLabel(activeSubtitleLanguage));
 
   const systemAdvice = useMemo<SystemAdvice[]>(() => {
     if (!sessionEnabled || state !== "running") {
       return [{
         severity: "ok",
-        title: "Ready to monitor",
-        detail: "Start a session to receive live stability, accuracy, and latency advice.",
+        title: t("Ready to monitor"),
+        detail: t("Start a session to receive live stability, accuracy, and latency advice."),
       }];
     }
 
@@ -791,99 +798,99 @@ export default function App() {
     if (asrBusy) {
       advice.push({
         severity: "warn",
-        title: "ASR is currently busy",
-        detail: lastError ?? "The backend is still processing the current audio window.",
-        action: "Use Summary Only mode, switch to a smaller Whisper model, or turn subtitles off if lag continues.",
+        title: t("ASR is currently busy"),
+        detail: lastError ?? t("The backend is still processing the current audio window."),
+        action: t("Use Summary Only mode, switch to a smaller Whisper model, or turn subtitles off if lag continues."),
       });
     } else if (asrSafeguardActive || rtf >= 1.0 || backpressureAgeSeconds != null) {
       advice.push({
         severity: asrSafeguardActive || rtf >= 1.2 ? "danger" : "warn",
-        title: "ASR is close to falling behind",
+        title: t("ASR is close to falling behind"),
         detail: asrSafeguardActive
-          ? (sessionStats?.asr_safeguard_reason ?? "The backend activated realtime protection.")
-          : `Last ASR realtime factor is ${formatRtf(asrRealtimeFactor)}.`,
-        action: "Use Summary Only mode, switch to a smaller Whisper model, or turn subtitles off if lag continues.",
+          ? (sessionStats?.asr_safeguard_reason ?? t("The backend activated realtime protection."))
+          : t("Last ASR realtime factor is {0}.", formatRtf(asrRealtimeFactor)),
+        action: t("Use Summary Only mode, switch to a smaller Whisper model, or turn subtitles off if lag continues."),
       });
     } else if (realtimeGap >= 4.0 && activeRuntimeProfile !== "summary_only") {
       advice.push({
         severity: "warn",
-        title: "Transcript is lagging the audio",
-        detail: `Latest visible transcript is ${formatLagSeconds(realtimeGap)} behind the audio clock.`,
-        action: "Try Summary Only mode if you can trade live captions for lower device load.",
+        title: t("Transcript is lagging the audio"),
+        detail: t("Latest visible transcript is {0} behind the audio clock.", formatLagSeconds(realtimeGap)),
+        action: t("Try Summary Only mode if you can trade live captions for lower device load."),
       });
     }
 
     if (weakRescueAttempts >= 2 || weakRescueBufferSeconds >= 2.0) {
       advice.push({
         severity: weakRescueEmitted > 0 ? "warn" : "ok",
-        title: "Quiet speech detected",
-        detail: `Weak voice rescue attempted ${weakRescueAttempts} time(s), emitted ${weakRescueEmitted}.`,
-        action: "Increase speaker volume, move closer to the microphone, or use Performance mode.",
+        title: t("Quiet speech detected"),
+        detail: t("Weak voice rescue attempted {0} time(s), emitted {1}.", weakRescueAttempts, weakRescueEmitted),
+        action: t("Increase speaker volume, move closer to the microphone, or use Performance mode."),
       });
     }
 
     if (mixedGainTone === "warn" || mixedGainTone === "danger") {
       advice.push({
         severity: mixedGainTone,
-        title: "Mixed audio balance may be uneven",
+        title: t("Mixed audio balance may be uneven"),
         detail: mixedGainHint,
-        action: "Adjust microphone/system volume or keep Mixed mode auto-balance enabled.",
+        action: t("Adjust microphone/system volume or keep Mixed mode auto-balance enabled."),
       });
     }
 
     if (translationPendingCount >= 4 || translationTrimTotal > 0) {
       advice.push({
         severity: translationTrimTotal > 0 ? "warn" : "ok",
-        title: "Subtitle translation is busy",
-        detail: `Pending translations ${translationPendingCount}, trims ${translationTrimTotal}.`,
-        action: "If the machine is struggling, turn subtitles off or use Summary Only mode.",
+        title: t("Subtitle translation is busy"),
+        detail: t("Pending translations {0}, trims {1}.", translationPendingCount, translationTrimTotal),
+        action: t("If the machine is struggling, turn subtitles off or use Summary Only mode."),
       });
     }
 
     if (audioDropTotal > 0) {
       advice.push({
         severity: audioDropTotal >= 5 ? "danger" : "warn",
-        title: "Audio chunks were dropped",
-        detail: `${audioDropTotal} capture chunk(s) have been dropped.`,
-        action: "Close other audio-heavy apps or switch source mode if drops continue.",
+        title: t("Audio chunks were dropped"),
+        detail: t("{0} capture chunk(s) have been dropped.", audioDropTotal),
+        action: t("Close other audio-heavy apps or switch source mode if drops continue."),
       });
     }
 
     if (audioInputBacklogSeconds >= 2.0 || audioInputQueueDropTotal > 0) {
       advice.push({
         severity: audioInputBacklogSeconds >= 5.0 || audioInputQueueDropTotal > 0 ? "warn" : "ok",
-        title: "Audio input is buffered",
-        detail: `Backlog ${formatLagSeconds(audioInputBacklogSeconds)}, queue drops ${audioInputQueueDropTotal}.`,
-        action: "Use Summary Only mode or a smaller Whisper model until backlog stays near 0s.",
+        title: t("Audio input is buffered"),
+        detail: t("Backlog {0}, queue drops {1}.", formatLagSeconds(audioInputBacklogSeconds), audioInputQueueDropTotal),
+        action: t("Use Summary Only mode or a smaller Whisper model until backlog stays near 0s."),
       });
     }
 
     if (fastPreviewEnabled && fastPreviewAttempts > 0 && fastPreviewEmitted === 0) {
       advice.push({
         severity: "warn",
-        title: "Fast preview has not emitted text yet",
-        detail: `Preview attempts ${fastPreviewAttempts}, skipped ${fastPreviewSkipped}.`,
-        action: "This can happen on silence or if ASR is busy; if speech is present, try a smaller preview model later.",
+        title: t("Fast preview has not emitted text yet"),
+        detail: t("Preview attempts {0}, skipped {1}.", fastPreviewAttempts, fastPreviewSkipped),
+        action: t("This can happen on silence or if ASR is busy; if speech is present, try a smaller preview model later."),
       });
     }
 
     if (speechLanguage !== "auto" && recentSpeechLanguages.size >= 2) {
       advice.push({
         severity: "warn",
-        title: "Multiple speech languages detected",
-        detail: `Recent transcript contains ${Array.from(recentSpeechLanguages).join(", ")}.`,
-        action: "Set Speech to Auto if the meeting is switching languages.",
+        title: t("Multiple speech languages detected"),
+        detail: t("Recent transcript contains {0}.", Array.from(recentSpeechLanguages).join(", ")),
+        action: t("Set Speech to Auto if the meeting is switching languages."),
       });
     }
 
     if (advice.length === 0) {
       advice.push({
         severity: "ok",
-        title: "Realtime path looks healthy",
-        detail: "No stability, latency, or accuracy warnings are active.",
+        title: t("Realtime path looks healthy"),
+        detail: t("No stability, latency, or accuracy warnings are active."),
         action: activeRuntimeProfile === "balanced"
-          ? "Keep Balanced mode unless you need lower load or stronger accuracy bias."
-          : `Current mode: ${formatRuntimeProfileLabel(activeRuntimeProfile)}.`,
+          ? t("Keep Balanced mode unless you need lower load or stronger accuracy bias.")
+          : t("Current mode: {0}.", formatRuntimeProfileLabel(activeRuntimeProfile)),
       });
     }
 
@@ -915,6 +922,7 @@ export default function App() {
     weakRescueAttempts,
     weakRescueBufferSeconds,
     weakRescueEmitted,
+    uiLanguage,
   ]);
   const systemAdviceTone = systemAdvice.some((item) => item.severity === "danger")
     ? "danger"
@@ -1105,7 +1113,7 @@ export default function App() {
   };
 
   const handleBookmark = async () => {
-    const label = window.prompt("Bookmark label (optional)", "");
+    const label = window.prompt(t("Bookmark label (optional)"), "");
     if (label === null) {
       return;
     }
@@ -1122,26 +1130,26 @@ export default function App() {
     requestSummary(summaryType);
   };
   const vocabularyHint = sessionEnabled
-    ? "Add keywords for better recognition. Save anytime, even during a meeting."
-    : "Add keywords for better recognition. Save anytime before or during a meeting.";
+    ? t("Add keywords for better recognition. Save anytime, even during a meeting.")
+    : t("Add keywords for better recognition. Save anytime before or during a meeting.");
   const vocabularyTermCount = useMemo(() => {
     return vocabulary
       .split(/[\n,，;；]+/)
       .map((term) => term.trim())
       .filter(Boolean).length;
-  }, [vocabulary]);
+  }, [vocabulary, uiLanguage]);
 
   const transcriptEmptyMessage = !sessionEnabled
-    ? "session stopped — press Start to begin capture"
+    ? t("session stopped — press Start to begin capture")
     : state === "starting"
-      ? "connecting to the live session…"
+      ? t("connecting to the live session…")
       : state === "paused"
-        ? "session paused — press Resume to continue capture"
+        ? t("session paused — press Resume to continue capture")
       : activeSource === "loopback" || activeSource === "system"
-        ? "listening to system audio only — play meeting audio or switch to System + Microphone"
+        ? t("listening to system audio only — play meeting audio or switch to System + Microphone")
         : activeSource === "mic"
-          ? "listening to microphone — speak to start the transcript"
-          : "listening to system audio + microphone — speak or play meeting audio to start the transcript";
+          ? t("listening to microphone — speak to start the transcript")
+          : t("listening to system audio + microphone — speak or play meeting audio to start the transcript");
 
   return (
     <div className="app">
@@ -1160,7 +1168,7 @@ export default function App() {
         <div className="brand-block">
           <div className="brand-row">
             <strong>MeetingBro</strong>
-            <span className={`session-state state-${state}`}>{state}</span>
+            <span className={`session-state state-${state}`}>{!sessionEnabled && backend.isReady ? "ready" : state}</span>
             {meetingId && <span className="meeting-id-pill">#{meetingId.slice(0, 8)}</span>}
             <span className={`compute-chip ${displayCpuActive ? "active" : computeCpuConfigured ? "configured" : computeCpuAvailable ? "available" : "idle"}`} title={cpuChipTitle}>
               <span className="compute-dot" aria-hidden="true" /> CPU
@@ -1169,99 +1177,104 @@ export default function App() {
               <span className="compute-dot" aria-hidden="true" /> GPU
             </span>
           </div>
-          <span className="app-tagline">Live captions ? AI notes ? clean meeting record</span>
+          <span className="app-tagline">{t("Live captions ? AI notes ? clean meeting record")}</span>
         </div>
-        <div className="header-controls" aria-label="Meeting controls">
-          <div className="settings-controls" aria-label="Capture and language settings">
+        <div className="header-controls" aria-label={t("Meeting controls")}>
+          <label className="control-pill">
+            <span>{t("Interface")}</span>
+            <select aria-label={t("UI language")} value={uiLanguage} onChange={(e) => setUiLanguage(e.target.value === "en" ? "en" : "zh-Hant")}>
+              <option value="zh-Hant">繁體中文</option>
+              <option value="en">English</option>
+            </select>
+          </label>
+          <div className="settings-controls" aria-label={t("Capture and language settings")}>
             <label className="control-pill">
-              <span>Capture</span>
+              <span>{t("Capture")}</span>
               <select value={source} onChange={(e) => setSource(e.target.value)}>
-                <option value="mic">Mic</option>
-                <option value="loopback">System audio</option>
-                <option value="mixed">System + Mic</option>
-                <option value="sample">Sample audio (demo)</option>
+                <option value="mic">{t("Mic")}</option>
+                <option value="loopback">{t("System audio")}</option>
+                <option value="mixed">{t("System + Mic")}</option>
+                <option value="sample">{t("Sample audio (demo)")}</option>
               </select>
             </label>
             {(source === "mic" || source === "mixed") && audioDevices && audioDevices.mics.length > 0 && (
               <label className="control-pill">
-                <span>Mic device</span>
+                <span>{t("Mic device")}</span>
                 <select value={audioDevice} onChange={(e) => setAudioDevice(e.target.value)}>
-                  <option value="">Default</option>
+                  <option value="">{t("Default")}</option>
                   {audioDevices.mics.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
                 </select>
               </label>
             )}
             {(source === "loopback" || source === "system") && audioDevices && audioDevices.loopbacks.length > 0 && (
               <label className="control-pill">
-                <span>Output device</span>
+                <span>{t("Output device")}</span>
                 <select value={loopbackDevice} onChange={(e) => setLoopbackDevice(e.target.value)}>
-                  <option value="">Default</option>
+                  <option value="">{t("Default")}</option>
                   {audioDevices.loopbacks.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
                 </select>
               </label>
             )}
             <label className="control-pill">
-              <span>Mode</span>
+              <span>{t("Mode")}</span>
               <select value={runtimeProfile} onChange={(e) => handleRuntimeProfileChange(e.target.value)}>
-                <option value="balanced">Balanced</option>
-                <option value="performance">Performance</option>
-                <option value="summary_only">Summary only</option>
+                <option value="balanced">{t("Balanced")}</option>
+                <option value="performance">{t("Performance")}</option>
+                <option value="summary_only">{t("Summary only")}</option>
               </select>
             </label>
             <label className="control-pill">
-              <span>Speech</span>
+              <span>{t("Speech")}</span>
               <select value={speechLanguage} onChange={(e) => setSpeechLanguage(e.target.value)}>
-                <option value="auto">Auto</option>
-                <option value="en">English</option>
-                <option value="zh">Chinese</option>
-                <option value="de">Deutsch</option>
+                <option value="auto">{t("Auto")}</option>
+                <option value="en">{t("English")}</option>
+                <option value="zh">{t("Chinese")}</option>
+                <option value="de">{t("Deutsch")}</option>
               </select>
             </label>
             <label className="control-pill">
-              <span>Notes</span>
+              <span>{t("Notes")}</span>
               <select value={summaryLanguage} onChange={(e) => setSummaryLanguage(e.target.value)}>
-                <option value="en">English</option>
-                <option value="zh">Chinese</option>
-                <option value="de">Deutsch</option>
+                <option value="en">{t("English")}</option>
+                <option value="zh">{t("Traditional Chinese")}</option>
+                <option value="de">{t("Deutsch")}</option>
               </select>
             </label>
             <label className="control-pill">
-              <span>Captions</span>
+              <span>{t("Captions")}</span>
               <select value={summaryOnlyMode ? "off" : subtitleLanguage} onChange={(e) => setSubtitleLanguage(e.target.value)} disabled={summaryOnlyMode}>
-                <option value="off">Off</option>
-                <option value="en">English</option>
-                <option value="zh">Chinese</option>
-                <option value="de">Deutsch</option>
+                <option value="off">{t("Off")}</option>
+                <option value="en">{t("English")}</option>
+                <option value="zh">{t("Chinese")}</option>
+                <option value="de">{t("Deutsch")}</option>
               </select>
             </label>
-            <button type="button" className="settings-gear" onClick={() => setHistoryOpen(true)} title="Meeting history" aria-label="Meeting history">
+            <button type="button" className="settings-gear" onClick={() => setHistoryOpen(true)} title={t("Meeting history")} aria-label={t("Meeting history")}>
               🕘
             </button>
-            <button type="button" className="settings-gear" onClick={() => setSettingsOpen(true)} title="Settings" aria-label="Settings">
+            <button type="button" className="settings-gear" onClick={() => setSettingsOpen(true)} title={t("Settings")} aria-label={t("Settings")}>
               ⚙
             </button>
           </div>
-          <div className="session-controls" aria-label="Session actions">
+          <div className="session-controls" aria-label={t("Session actions")}>
             {!sessionEnabled ? (
               <>
                 <button
                   className="sample-btn"
                   onClick={handleTrySample}
                   disabled={!backend.isReady}
-                  title="Replay a bundled demo clip — no microphone or meeting needed"
+                  title={t("Replay a bundled demo clip — no microphone or meeting needed")}
                 >
-                  ▶ Try sample
-                </button>
-                <button className="start-btn" onClick={handleStartSession} disabled={!backend.isReady}>Start</button>
+                  {t("▶ Try sample")}</button>
+                <button className="start-btn" onClick={handleStartSession} disabled={!backend.isReady}>{t("Start")}</button>
               </>
             ) : (
               <>
                 {state === "paused" ? (
-                  <button className="resume-btn" onClick={resumeSession}>Resume</button>
+                  <button className="resume-btn" onClick={resumeSession}>{t("Resume")}</button>
                 ) : (
                   <button className="pause-btn" onClick={pauseSession} disabled={state !== "running"}>
-                    Pause
-                  </button>
+                    {t("Pause")}</button>
                 )}
                 <button
                   className="stop-btn"
@@ -1270,13 +1283,12 @@ export default function App() {
                     setSessionEnabled(false);
                   }}
                 >
-                  Stop
-                </button>
+                  {t("Stop")}</button>
               </>
             )}
             <span className={`connection-pill ${connected ? "connected" : "disconnected"}`}>
               <span className={connected ? "dot ok" : "dot bad"} />
-              {connected ? "Online" : "Offline"}
+              {connected ? t("Online") : !sessionEnabled && backend.isReady ? t("Ready") : t("Offline")}
             </span>
           </div>
         </div>
@@ -1286,14 +1298,14 @@ export default function App() {
         lastErrorCode === "llm_unavailable" || lastErrorCode === "translation_unavailable" ? (
           <div className="error error--actionable">
             <span>{lastError}</span>
-            <button type="button" className="settings-btn" onClick={() => setSettingsOpen(true)}>Open Settings</button>
+            <button type="button" className="settings-btn" onClick={() => setSettingsOpen(true)}>{t("Open Settings")}</button>
           </div>
         ) : (
           <div className="error">{lastError}</div>
         )
       )}
 
-      <section className={`startup-settings vocabulary-dock${vocabularyOpen ? " open" : ""}`} aria-label="Names and terms settings">
+      <section className={`startup-settings vocabulary-dock${vocabularyOpen ? " open" : ""}`} aria-label={t("Names and terms settings")}>
         <button
           type="button"
           className="vocabulary-toggle"
@@ -1301,11 +1313,11 @@ export default function App() {
           onClick={() => setVocabularyOpen((open) => !open)}
         >
           <span className="vocabulary-toggle-main">
-            <strong>Names &amp; Terms</strong>
-            <span className="vocabulary-toggle-note">Improve recognition for names, acronyms, and project terms</span>
+            <strong>{t("Names & Terms")}</strong>
+            <span className="vocabulary-toggle-note">{t("Improve recognition for names, acronyms, and project terms")}</span>
           </span>
           <span className="vocabulary-count">
-            {vocabularyTermCount === 0 ? "No terms" : `${vocabularyTermCount} ${vocabularyTermCount === 1 ? "term" : "terms"}`}
+            {vocabularyTermCount === 0 ? t("No terms") : `${vocabularyTermCount} ${vocabularyTermCount === 1 ? "term" : "terms"}`}
           </span>
           <span className={`toggle-caret${vocabularyOpen ? " open" : ""}`} aria-hidden="true">▼</span>
         </button>
@@ -1318,9 +1330,9 @@ export default function App() {
                 onChange={(e) => setVocabulary(e.target.value)}
                 placeholder="Anthropic, MeetingBro, Libin Mao, faster-whisper, pyannote"
                 rows={2}
-                aria-label="Names, acronyms, or project terms"
+                aria-label={t("Names, acronyms, or project terms")}
               />
-              <button type="button" className="secondary-action-btn" onClick={handleSaveVocabulary}>Save Terms</button>
+              <button type="button" className="secondary-action-btn" onClick={handleSaveVocabulary}>{t("Save Terms")}</button>
             </div>
           </div>
         )}
@@ -1332,65 +1344,58 @@ export default function App() {
             <header>
               <div>
                 <h2>
-                  Summary Only
-                  {state === "running" && <span className="live-dot" aria-label="recording" />}
+                  {t("Summary Only")}{state === "running" && <span className="live-dot" aria-label="recording" />}
                 </h2>
-                <p className="subtitle">capturing in background · no live captions</p>
+                <p className="subtitle">{t("capturing in background · no live captions")}</p>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <button type="button" className="secondary-action-btn" onClick={handleBookmark} disabled={!connected || state !== "running"}>
-                  Bookmark
-                </button>
-                <div className="range">{segments.length} segments</div>
+                  {t("Bookmark")}</button>
+                <div className="range">{segments.length} {" "}{t("segments")}</div>
               </div>
             </header>
             <div className="panel-body summary-only-body">
               <div className="summary-only-banner">
-                <strong>Realtime captions are intentionally hidden in this mode.</strong>
+                <strong>{t("Realtime captions are intentionally hidden in this mode.")}</strong>
                 <p>
-                  MeetingBro is still listening and collecting transcript segments, then updating Summary, Clean Notes,
-                  and Board on their own cadence.
-                </p>
+                  {t("MeetingBro is still listening and collecting transcript segments, then updating Summary, Clean Notes, and Board on their own cadence.")}</p>
               </div>
               <div className="summary-only-stats">
                 <div className="summary-only-stat">
-                  <span>Captured</span>
-                  <strong>{segments.length} segments</strong>
+                  <span>{t("Captured")}</span>
+                  <strong>{segments.length} {" "}{t("segments")}</strong>
                 </div>
                 <div className="summary-only-stat">
-                  <span>Elapsed</span>
+                  <span>{t("Elapsed")}</span>
                   <strong>{formatElapsedSeconds(audioClockSeconds ?? elapsedSeconds)}</strong>
                 </div>
                 <div className="summary-only-stat">
-                  <span>Latest summary</span>
+                  <span>{t("Latest summary")}</span>
                   <strong>{rolling?.created_at ? formatCreatedAt(rolling.created_at) : "waiting"}</strong>
                 </div>
               </div>
               <p className="muted summary-only-tip">
-                Tip: use the Refresh button in Summary or Clean Notes if you want an immediate update.
-              </p>
+                {t("Tip: use the Refresh button in Summary or Clean Notes if you want an immediate update.")}</p>
             </div>
           </section>
         ) : <section className="panel transcript">
           <header>
             <div>
               <h2>
-                Live Captions
-                {state === "running" && <span className="live-dot" aria-label="recording" />}
+                {t("Live Captions")}{state === "running" && <span className="live-dot" aria-label="recording" />}
               </h2>
-              <p className="subtitle">confirmed · timestamped</p>
+              <p className="subtitle">{t("confirmed · timestamped")}</p>
               <p className="transcript-lag-meta">
-                <span className={`delay-pill delay-${delayTone}`}>{formatLagSeconds(transcriptLagSeconds)} behind</span>
+                <span className={`delay-pill delay-${delayTone}`}>{formatLagSeconds(transcriptLagSeconds)} {" "}{t("behind")}</span>
                 {committedLagSeconds != null ? ` · commit ${formatLagSeconds(committedLagSeconds)}` : ""}
-                {previewSegment ? " · previewing" : ""}
+                {previewSegment ? t(" · previewing") : ""}
               </p>
-              {bookmarkFeedback && <p className="bookmark-feedback">{bookmarkFeedback}</p>}
+              {bookmarkFeedback && <p className="bookmark-feedback">{t(bookmarkFeedback)}</p>}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <button type="button" className="secondary-action-btn" onClick={handleBookmark} disabled={!connected || state !== "running"}>
-                Bookmark
-              </button>
-              <div className="range">{segments.length} segments</div>
+                {t("Bookmark")}</button>
+              <div className="range">{segments.length} {" "}{t("segments")}</div>
             </div>
           </header>
           <div
@@ -1412,9 +1417,9 @@ export default function App() {
               if (item.type === "bookmark") {
                 return (
                   <div key={item.note.id} className="segment bookmark-marker">
-                    <span className="ts">bookmark · {formatElapsedSeconds(item.note.time_seconds)}</span>
+                    <span className="ts">{t("bookmark ·")}{" "}{formatElapsedSeconds(item.note.time_seconds)}</span>
                     <div className="segment-text">
-                      <span>{item.note.content.trim() || "Important moment"}</span>
+                      <span>{item.note.content.trim() || t("Important moment")}</span>
                     </div>
                   </div>
                 );
@@ -1461,7 +1466,7 @@ export default function App() {
                       <span className="segment-subtitle">{subtitleText}</span>
                     )}
                     {showSubtitlePlaceholder && (
-                      <span className="segment-subtitle segment-subtitle-pending" aria-label="translating subtitle">
+                      <span className="segment-subtitle segment-subtitle-pending" aria-label={t("translating subtitle")}>
                         <span className="subtitle-loading-dot" />
                         <span className="subtitle-loading-dot" />
                         <span className="subtitle-loading-dot" />
@@ -1472,7 +1477,7 @@ export default function App() {
               );
             })}
             {shouldShowPreviewStack && (
-              <div className="preview-stack" aria-live="polite" aria-label="Live preview transcript">
+              <div className="preview-stack" aria-live="polite" aria-label={t("Live preview transcript")}>
                 {departingPreviewSegments.map((segment, index) => {
                   const previewDelayMs = index * PREVIEW_ROW_STAGGER_MS;
                   const previewStyle: StaggerStyle = {
@@ -1484,8 +1489,7 @@ export default function App() {
                     <span className="preview-status">
                       <span className="preview-hearing">
                         <span className="preview-pulse-dot" aria-hidden="true" />
-                        Listening
-                      </span>
+                        {t("Listening")}</span>
                     </span>
                     <span className="preview-segment-text">{segment.text}</span>
                   </div>
@@ -1508,15 +1512,13 @@ export default function App() {
                       <span className="preview-status">
                         <span className="preview-hearing">
                           <span className="preview-pulse-dot" aria-hidden="true" />
-                          Listening
-                        </span>
+                          {t("Listening")}</span>
                         {isExperimentalPreview && (
                           <span
                             className="preview-experimental-badge"
-                            title="Qwen3 fast preview · text is live and may still change"
+                            title={t("Qwen3 fast preview · text is live and may still change")}
                           >
-                            Qwen · Live
-                          </span>
+                            {t("Qwen · Live")}</span>
                         )}
                       </span>
                       <span className="preview-segment-text">
@@ -1539,8 +1541,7 @@ export default function App() {
                   scrollTranscriptToBottom("smooth");
                 }}
               >
-                Jump to latest
-              </button>
+                {t("Jump to latest")}</button>
             )}
           </div>
         </section>}
@@ -1554,8 +1555,7 @@ export default function App() {
               className={`workspace-tab-btn${activeTab === "summary" ? " active" : ""}`}
               onClick={() => setActiveTab("summary")}
             >
-              Summary
-            </button>
+              {t("Summary")}</button>
             <button
               type="button"
               role="tab"
@@ -1563,8 +1563,7 @@ export default function App() {
               className={`workspace-tab-btn${activeTab === "clean" ? " active" : ""}`}
               onClick={() => setActiveTab("clean")}
             >
-              Clean Notes
-            </button>
+              {t("Clean Notes")}</button>
             <button
               type="button"
               role="tab"
@@ -1572,9 +1571,14 @@ export default function App() {
               className={`workspace-tab-btn${activeTab === "board" ? " active" : ""}`}
               onClick={() => setActiveTab("board")}
             >
-              Board
-            </button>
-            <button type="button" role="tab" aria-selected={activeTab === "report"} className={`workspace-tab-btn${activeTab === "report" ? " active" : ""}`} onClick={() => setActiveTab("report")}>Interactive report</button>
+              {t("Board")}</button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === "report"}
+              className={`workspace-tab-btn${activeTab === "report" ? " active" : ""}`}
+              onClick={() => setActiveTab("report")}
+            >{t("Interactive report")}</button>
             <button
               type="button"
               role="tab"
@@ -1582,17 +1586,21 @@ export default function App() {
               className={`workspace-tab-btn${activeTab === "notes" ? " active" : ""}`}
               onClick={() => setActiveTab("notes")}
             >
-              Notes
-            </button>
+              {t("Notes")}</button>
           </div>
           <div className="workspace-content">
+            {(sessionStats?.summary_pending_count ?? 0) > 0 && sessionStats?.inference_defer_reason && <p role="status" className="settings-hint">{t("Summary waiting: {0}", t(sessionStats.inference_defer_reason))}</p>}
+            {finalJob && <p role="status" className="settings-hint">{t("Final summary: {0}", t(finalJob.status))}{finalJob.error && ` · ${finalJob.error}`}{finalJob.status === "failed" && ` · ${t("Retry from meeting history")}`}</p>}
             {activeTab === "summary" && (
               <SummaryPanel
                 compact
-                title="AI Summary"
-                subtitle="rolling AI digest of the last 3–5 minutes"
-                snapshot={rolling}
-                history={historyByType.rolling_summary ?? []}
+                title={t("AI Summary")}
+                subtitle={t("rolling AI digest of the last 3–5 minutes")}
+                snapshot={latestByType.final_summary ?? rolling}
+                history={[
+                  ...(historyByType.rolling_summary ?? []),
+                  ...(historyByType.final_summary ?? []),
+                ]}
                 sessionStartedAt={sessionStartedAt}
                 accent="#2563eb"
                 onSaveToNotes={handleSaveToNotes}
@@ -1604,8 +1612,8 @@ export default function App() {
             {activeTab === "clean" && (
               <SummaryPanel
                 compact
-                title="AI Clean Notes"
-                subtitle="polished conversation record · Whisper + Qwen + LLM"
+                title={t("AI Clean Notes")}
+                subtitle={t("polished conversation record · Whisper + Qwen + LLM")}
                 snapshot={refined}
                 history={historyByType.refined_transcript ?? []}
                 sessionStartedAt={sessionStartedAt}
@@ -1619,8 +1627,8 @@ export default function App() {
             {activeTab === "board" && (
               <SummaryPanel
                 compact
-                title="Meeting Board"
-                subtitle="live meeting state · decisions · actions · open questions"
+                title={t("Meeting Board")}
+                subtitle={t("live meeting state · decisions · actions · open questions")}
                 snapshot={cumulative}
                 history={historyByType.cumulative_meeting_summary ?? []}
                 sessionStartedAt={sessionStartedAt}
@@ -1632,27 +1640,26 @@ export default function App() {
               />
             )}
             {activeTab === "report" && <div className="workspace-tab-panel panel-body">
-              {liveReport ? <ReportView report={liveReport} transcript={segments} /> : <p>The report will appear when a summary is ready.</p>}
+              {liveReport ? <ReportView report={liveReport} transcript={segments} /> : <p>{t("The report will appear when a summary is ready.")}</p>}
             </div>}
             {activeTab === "notes" && (
               <div className="workspace-tab-panel">
                 <div ref={notesBodyRef} className="panel-body">
                   <div className="export-box">
                     <div>
-                      <strong>Export meeting files</strong>
-                      <p className="muted">Creates transcript.md, summary.md, and metadata.json in the chosen folder.</p>
+                      <strong>{t("Export meeting files")}</strong>
+                      <p className="muted">{t("Creates transcript.md, summary.md, and metadata.json in the chosen folder.")}</p>
                       <div className="export-target-row">
                         <input
                           type="text"
                           value={exportRoot}
                           onChange={(e) => setExportRoot(e.target.value)}
-                          placeholder="Default: project exports/<timestamp> folder"
-                          aria-label="Export folder"
+                          placeholder={t("Default: project exports/<timestamp> folder")}
+                          aria-label={t("Export folder")}
                         />
                         {window.meetingbro?.selectExportDirectory && (
                           <button type="button" className="secondary-export-btn" onClick={handleChooseExportFolder} disabled={exporting}>
-                            Browse…
-                          </button>
+                            {t("Browse…")}</button>
                         )}
                       </div>
                       <label style={{ display: "inline-flex", alignItems: "center", gap: 8, marginTop: 10, fontSize: 12 }}>
@@ -1661,16 +1668,15 @@ export default function App() {
                           checked={bilingualExport}
                           onChange={(e) => setBilingualExport(e.target.checked)}
                         />
-                        Bilingual transcript (original + translation)
-                      </label>
+                        {t("Bilingual transcript (original + translation)")}</label>
                       {lastExport && (
                         <p className="export-path">
-                          Latest export: <code>{lastExport.export_dir}</code>
+                          {t("Latest export:")}<code>{lastExport.export_dir}</code>
                         </p>
                       )}
                       {(exporting || actionFeedback) && exportIntent !== "restart" && (
                         <p className={`action-feedback ${exporting ? "is-busy" : "is-success"}`}>
-                          {exporting ? "Preparing transcript, summary, and metadata…" : actionFeedback}
+                          {exporting ? t("Preparing transcript, summary, and metadata…") : (actionFeedback ? t(actionFeedback) : null)}
                         </p>
                       )}
                     </div>
@@ -1681,21 +1687,21 @@ export default function App() {
                       disabled={!meetingId || exporting}
                       aria-busy={exporting && exportIntent === "manual"}
                     >
-                      {exporting ? "Exporting…" : "Export Meeting"}
+                      {exporting ? t("Exporting…") : t("Export Meeting")}
                     </button>
                   </div>
                   {chapterSnapshot && (
                     <div>
-                      <strong>Chapters</strong>
+                      <strong>{t("Chapters")}</strong>
                       {chapters.length === 0 ? (
-                        <p className="muted">No chapters extracted.</p>
+                        <p className="muted">{t("No chapters extracted.")}</p>
                       ) : (
                         <ul className="notes-list">
                           {chapters.map((chapter, index) => (
                             <li key={`chapter-${index}`}>
                               <div className="note-meta">
                                 <span>{formatRange(Number(chapter.time_start ?? 0), Number(chapter.time_end ?? 0))}</span>
-                                <span>{String(chapter.title ?? "Untitled chapter")}</span>
+                                <span>{String(chapter.title ?? t("Untitled chapter"))}</span>
                               </div>
                               <div>{String(chapter.summary ?? "")}</div>
                             </li>
@@ -1706,17 +1712,17 @@ export default function App() {
                   )}
                   {actionItemSnapshot && (
                     <div>
-                      <strong>Action Items</strong>
+                      <strong>{t("Action Items")}</strong>
                       {actionItems.length === 0 ? (
-                        <p className="muted">No action items extracted.</p>
+                        <p className="muted">{t("No action items extracted.")}</p>
                       ) : (
                         <ul className="notes-list">
                           {actionItems.map((item, index) => (
                             <li key={`action-${index}`}>
                               <div>{String(item.text ?? "")}</div>
                               <div className="note-meta">
-                                <span>{item.assignee ? `assignee: ${String(item.assignee)}` : "unassigned"}</span>
-                                <span>{item.due ? `due: ${String(item.due)}` : "no due date"}</span>
+                                <span>{item.assignee ? t("assignee: {0}", String(item.assignee)) : "unassigned"}</span>
+                                <span>{item.due ? t("due: {0}", String(item.due)) : t("no due date")}</span>
                               </div>
                             </li>
                           ))}
@@ -1725,7 +1731,7 @@ export default function App() {
                     </div>
                   )}
                   {notes.length === 0 ? (
-                    <p className="muted">No saved notes yet. Use "Save to notes" on a summary panel.</p>
+                    <p className="muted">{t("No saved notes yet. Use \"Save to notes\" on a summary panel.")}</p>
                   ) : (
                     <ul className="notes-list">
                       {notes.map((n) => (
@@ -1756,9 +1762,9 @@ export default function App() {
           aria-expanded={diagnosticsOpen}
           aria-controls="diagnostics-drawer"
         >
-          <span className="diagnostics-toggle-label">System Health</span>
+          <span className="diagnostics-toggle-label">{t("System Health")}</span>
           <span className={`health-badge health-${systemAdviceTone}`}>
-            {systemAdviceTone === "ok" ? "Healthy" : systemAdviceTone === "warn" ? "Check needed" : "Alert"}
+            {systemAdviceTone === "ok" ? t("Healthy") : systemAdviceTone === "warn" ? t("Check needed") : t("Alert")}
           </span>
           {elapsedSeconds > 0 && (
             <span className="diagnostics-toggle-elapsed">{formatElapsedSeconds(elapsedSeconds)}</span>
@@ -1769,7 +1775,7 @@ export default function App() {
           <div id="diagnostics-drawer" className="diagnostics-drawer">
             <div className="diagnostics-body">
               <div className={`diagnostic-card advice-card advice-${systemAdviceTone}`}>
-                <span className="diagnostic-label">System Advice</span>
+                <span className="diagnostic-label">{t("System Advice")}</span>
                 <div className="advice-list">
                   {systemAdvice.map((item) => (
                     <div key={`${item.title}-${item.detail}`} className={`advice-item advice-${item.severity}`}>
@@ -1784,43 +1790,43 @@ export default function App() {
                   className="diagnostics-mode-toggle"
                   onClick={() => setDiagnosticsMode((m) => (m === "simple" ? "advanced" : "simple"))}
                 >
-                  {diagnosticsMode === "simple" ? "Show advanced details" : "Hide advanced details"}
+                  {diagnosticsMode === "simple" ? t("Show advanced details") : t("Hide advanced details")}
                 </button>
               </div>
               {diagnosticsMode === "advanced" && (<>
               <div className="diagnostic-card">
-                <span className="diagnostic-label">Active Source</span>
+                <span className="diagnostic-label">{t("Active Source")}</span>
                 <strong className="diagnostic-value">{formatSourceLabel(activeSource)}</strong>
                 <span className="diagnostic-note">
                   {activeSource === "mixed"
-                    ? "capturing system audio and microphone"
+                    ? t("capturing system audio and microphone")
                     : activeSource === "loopback" || activeSource === "system"
-                      ? "capturing system output only"
-                      : "capturing microphone only"}
+                      ? t("capturing system output only")
+                      : t("capturing microphone only")}
                 </span>
               </div>
               <div className="diagnostic-card">
-                <span className="diagnostic-label">Runtime Mode</span>
+                <span className="diagnostic-label">{t("Runtime Mode")}</span>
                 <strong className="diagnostic-value">{formatRuntimeProfileLabel(activeRuntimeProfile)}</strong>
                 <span className="diagnostic-note">
-                  chunk {formatLagSeconds(activeChunkSeconds)} · ASR window {formatLagSeconds(activeAccumSeconds)} · lock {languageLockEnabled ? "on" : "off"}
+                  {t("chunk")}{formatLagSeconds(activeChunkSeconds)} {" "}{t("· ASR window")}{" "}{formatLagSeconds(activeAccumSeconds)} {" "}{t("· lock")}{" "}{languageLockEnabled ? "on" : "off"}
                 </span>
               </div>
               <div className="diagnostic-card">
-                <span className="diagnostic-label">Hardware Profile</span>
+                <span className="diagnostic-label">{t("Hardware Profile")}</span>
                 <strong className="diagnostic-value">{activeHardwareProfile}</strong>
                 <span className="diagnostic-note">{activeHardwareSummary}</span>
                 {computeGpuAvailable && !computeGpuConfigured && (
-                  <span className="diagnostic-note diagnostic-hint">GPU available but not assigned to ASR</span>
+                  <span className="diagnostic-note diagnostic-hint">{t("GPU available but not assigned to ASR")}</span>
                 )}
               </div>
               <div className="diagnostic-card">
-                <span className="diagnostic-label">Compute Activity</span>
+                <span className="diagnostic-label">{t("Compute Activity")}</span>
                 <strong className="diagnostic-value">{computeCpuActive || computeGpuActive ? "active" : "idle"}</strong>
                 <span className="diagnostic-note">{computeActivityLabel}</span>
               </div>
               <div className={`diagnostic-card delay-card delay-${resourcePressureLevel === "critical" ? "danger" : resourcePressureLevel === "pressure" ? "warn" : "ok"}`}>
-                <span className="diagnostic-label">Resource Governor</span>
+                <span className="diagnostic-label">{t("Resource Governor")}</span>
                 <strong className="diagnostic-value">{resourcePressureLevel}</strong>
                 <span className="diagnostic-note">
                   {resourceGovernorPolicy} ? skips {resourceGovernorSkips}
@@ -1828,11 +1834,11 @@ export default function App() {
                 </span>
               </div>
               <div className={`diagnostic-card gain-card gain-${mixedGainTone}`}>
-                <span className="diagnostic-label">Mixed Gain</span>
+                <span className="diagnostic-label">{t("Mixed Gain")}</span>
                 <strong className="diagnostic-value">{mixedGainRatio}</strong>
                 <span className="diagnostic-note">
                   {activeSource === "mixed"
-                    ? `mic effective ${formatGain(mixedEffectiveMicGain)} · base ${formatGain(mixedMicGain)} · auto ${mixedAutoBalanceEnabled ? "on" : "off"}`
+                    ? t("mic effective {0} · base {1} · auto {2}", formatGain(mixedEffectiveMicGain), formatGain(mixedMicGain), mixedAutoBalanceEnabled ? "on" : "off")
                     : mixedGainHint}
                 </span>
                 {activeSource === "mixed" && (
@@ -1840,136 +1846,136 @@ export default function App() {
                 )}
               </div>
               <div className="diagnostic-card">
-                <span className="diagnostic-label">Subtitles</span>
+                <span className="diagnostic-label">{t("Subtitles")}</span>
                 <strong className="diagnostic-value">{subtitleStatus}</strong>
                 <span className="diagnostic-note">{subtitleStatusDetail}</span>
               </div>
               <div className="diagnostic-card">
-                <span className="diagnostic-label">Audio Clock</span>
+                <span className="diagnostic-label">{t("Audio Clock")}</span>
                 <strong className="diagnostic-value">{formatElapsedSeconds(audioClockSeconds)}</strong>
-                <span className="diagnostic-note">{elapsedSeconds > 0 ? "backend progress" : "frontend estimate"}</span>
+                <span className="diagnostic-note">{elapsedSeconds > 0 ? t("backend progress") : t("frontend estimate")}</span>
               </div>
               <div className="diagnostic-card">
-                <span className="diagnostic-label">Committed Transcript</span>
+                <span className="diagnostic-label">{t("Committed Transcript")}</span>
                 <strong className="diagnostic-value">{formatElapsedSeconds(visibleTranscriptSeconds)}</strong>
-                <span className="diagnostic-note">{latestSegment ? `last committed · ${formatRange(latestSegment.start_time, latestSegment.end_time)}` : "waiting for committed text"}</span>
+                <span className="diagnostic-note">{latestSegment ? t("last committed · {0}", formatRange(latestSegment.start_time, latestSegment.end_time)) : t("waiting for committed text")}</span>
               </div>
               <div className={`diagnostic-card delay-card delay-${delayTone}`}>
-                <span className="diagnostic-label">Realtime Gap</span>
+                <span className="diagnostic-label">{t("Realtime Gap")}</span>
                 <strong className="diagnostic-value">{formatLagSeconds(transcriptLagSeconds)}</strong>
-                <span className="diagnostic-note">current audio clock minus latest visible transcript</span>
+                <span className="diagnostic-note">{t("current audio clock minus latest visible transcript")}</span>
               </div>
               <div className="diagnostic-card">
-                <span className="diagnostic-label">Commit Delay</span>
+                <span className="diagnostic-label">{t("Commit Delay")}</span>
                 <strong className="diagnostic-value">{formatLagSeconds(committedLagSeconds)}</strong>
                 <span className="diagnostic-note">
                   {committedLagSeconds != null
-                    ? "reference only · commit time minus segment end"
-                    : "waiting for committed text"}
+                    ? t("reference only · commit time minus segment end")
+                    : t("waiting for committed text")}
                 </span>
               </div>
               <div className="diagnostic-card">
-                <span className="diagnostic-label">Retry Summary</span>
+                <span className="diagnostic-label">{t("Retry Summary")}</span>
                 <strong className="diagnostic-value">{retryTotal}</strong>
-                <span className="diagnostic-note">improved {retryImproved} · unchanged {retryUnchanged} · diverged {retryDiverged}</span>
+                <span className="diagnostic-note">{t("improved")}{" "}{retryImproved} {" "}{t("· unchanged")}{" "}{retryUnchanged} {" "}{t("· diverged")}{" "}{retryDiverged}</span>
               </div>
               <div className={`diagnostic-card delay-card delay-${asrSafeguardActive ? "danger" : (asrRealtimeFactor != null && asrRealtimeFactor > 0.8 ? "warn" : "ok")}`}>
-                <span className="diagnostic-label">ASR Realtime</span>
+                <span className="diagnostic-label">{t("ASR Realtime")}</span>
                 <strong className="diagnostic-value">{formatRtf(asrRealtimeFactor)}</strong>
                 <span className="diagnostic-note">
-                  audio {formatLagSeconds(asrAudioSeconds)} · ASR {formatLagSeconds(asrWallSeconds)}
+                  {t("audio")}{formatLagSeconds(asrAudioSeconds)} · ASR {formatLagSeconds(asrWallSeconds)}
                 </span>
               </div>
               <div className={`diagnostic-card delay-card delay-${fastPreviewRtf != null && fastPreviewRtf > 0.8 ? "warn" : "ok"}`}>
-                <span className="diagnostic-label">Fast Preview</span>
+                <span className="diagnostic-label">{t("Fast Preview")}</span>
                 <strong className="diagnostic-value">{fastPreviewEnabled ? formatRtf(fastPreviewRtf) : "off"}</strong>
                 <span className="diagnostic-note">
-                  emitted {fastPreviewEmitted} · skipped {fastPreviewSkipped}
+                  {t("emitted")}{fastPreviewEmitted} {" "}{t("· skipped")}{" "}{fastPreviewSkipped}{sessionStats?.fast_preview_skip_reason ? ` · ${sessionStats.fast_preview_skip_reason}` : ""}
                 </span>
               </div>
               <div className="diagnostic-card">
-                <span className="diagnostic-label">Realtime Internals</span>
+                <span className="diagnostic-label">{t("Realtime Internals")}</span>
                 <strong className="diagnostic-value">q {eventQueueDepth}</strong>
                 <span className="diagnostic-note">
-                  audio wait {formatLagSeconds(audioQueueWaitSeconds)} · preview wake {formatLagSeconds(fastPreviewScheduleDelay)} · concat {formatLagSeconds(snapshotConcatWall)}
+                  {t("audio wait")}{formatLagSeconds(audioQueueWaitSeconds)} {" "}{t("· preview wake")}{" "}{formatLagSeconds(fastPreviewScheduleDelay)} {" "}{t("· concat")}{" "}{formatLagSeconds(snapshotConcatWall)}
                 </span>
               </div>
               <div className="diagnostic-card">
-                <span className="diagnostic-label">Preview Continued</span>
+                <span className="diagnostic-label">{t("Preview Continued")}</span>
                 <strong className="diagnostic-value">{previewContinuedDuringFormal}</strong>
-                <span className="diagnostic-note">Qwen preview updates while formal text is pending</span>
+                <span className="diagnostic-note">{t("Qwen preview updates while formal text is pending")}</span>
               </div>
               <div className="diagnostic-card">
-                <span className="diagnostic-label">Preview Stale Suppressed</span>
+                <span className="diagnostic-label">{t("Preview Stale Suppressed")}</span>
                 <strong className="diagnostic-value">{previewStaleSuppressed}</strong>
-                <span className="diagnostic-note">previews dropped (covered by formal)</span>
+                <span className="diagnostic-note">{t("previews dropped (covered by formal)")}</span>
               </div>
               <div className="diagnostic-card">
-                <span className="diagnostic-label">Preview Alignment</span>
+                <span className="diagnostic-label">{t("Preview Alignment")}</span>
                 <strong className="diagnostic-value">
                   {previewAlignmentCompared > 0
-                    ? `${(previewAlignmentSimilarityAvg ?? 0).toFixed(2)} avg`
+                    ? t("{0} avg", (previewAlignmentSimilarityAvg ?? 0).toFixed(2))
                     : "—"}
                 </strong>
                 <span className="diagnostic-note">
-                  compared {previewAlignmentCompared} · last {previewAlignmentSimilarityLast != null ? previewAlignmentSimilarityLast.toFixed(2) : "—"}
+                  {t("compared")}{previewAlignmentCompared} {" "}{t("· last")}{" "}{previewAlignmentSimilarityLast != null ? previewAlignmentSimilarityLast.toFixed(2) : "—"}
                 </span>
               </div>
               <div className={`diagnostic-card delay-card delay-${previewUnconfirmedAfterFormal > 0 ? "warn" : "ok"}`}>
-                <span className="diagnostic-label">Preview Unconfirmed</span>
+                <span className="diagnostic-label">{t("Preview Unconfirmed")}</span>
                 <strong className="diagnostic-value">{previewUnconfirmedAfterFormal}</strong>
                 <span className="diagnostic-note">
-                  {previewUnconfirmedLastText ? `last: ${previewUnconfirmedLastText}` : "no preview has been passed by formal without overlap"}
+                  {previewUnconfirmedLastText ? t("last: {0}", previewUnconfirmedLastText) : t("no preview has been passed by formal without overlap")}
                 </span>
               </div>
               <div className={`diagnostic-card delay-card delay-${qwenTargetedRetryFailed > 0 ? "warn" : "ok"}`}>
-                <span className="diagnostic-label">Qwen Recovery</span>
+                <span className="diagnostic-label">{t("Qwen Recovery")}</span>
                 <strong className="diagnostic-value">{qwenTargetedRetryRecovered}</strong>
                 <span className="diagnostic-note">
-                  attempts {qwenTargetedRetryAttempts} · failed {qwenTargetedRetryFailed} · skipped {qwenTargetedRetrySkipped}
+                  {t("attempts")}{qwenTargetedRetryAttempts} {" "}{t("· failed")}{" "}{qwenTargetedRetryFailed} {" "}{t("· skipped")}{" "}{qwenTargetedRetrySkipped}
                   {qwenTargetedRetryLastReason ? ` · ${qwenTargetedRetryLastReason}` : ""}
                 </span>
               </div>
               <div className={`diagnostic-card delay-card delay-${asrSafeguardActive ? "danger" : "ok"}`}>
-                <span className="diagnostic-label">Realtime Safeguard</span>
+                <span className="diagnostic-label">{t("Realtime Safeguard")}</span>
                 <strong className="diagnostic-value">{asrSafeguardActive ? "active" : "clear"}</strong>
                 <span className="diagnostic-note">
                   {asrSafeguardActive
-                    ? (sessionStats?.asr_safeguard_reason ?? "protecting realtime path")
-                    : `events ${asrSafeguardEvents}`}
+                    ? (sessionStats?.asr_safeguard_reason ?? t("protecting realtime path"))
+                    : t("events {0}", asrSafeguardEvents)}
                 </span>
               </div>
               <div className="diagnostic-card">
-                <span className="diagnostic-label">Weak Voice Rescue</span>
+                <span className="diagnostic-label">{t("Weak Voice Rescue")}</span>
                 <strong className="diagnostic-value">{weakRescueAttempts}</strong>
                 <span className="diagnostic-note">
-                  emitted {weakRescueEmitted} · buffer {formatLagSeconds(weakRescueBufferSeconds)}
+                  {t("emitted")}{weakRescueEmitted} {" "}{t("· buffer")}{" "}{formatLagSeconds(weakRescueBufferSeconds)}
                 </span>
               </div>
               <div className="diagnostic-card">
-                <span className="diagnostic-label">Background Queue</span>
+                <span className="diagnostic-label">{t("Background Queue")}</span>
                 <strong className="diagnostic-value">{translationPendingCount + summaryPendingCount}</strong>
                 <span className="diagnostic-note">
-                  translations {translationPendingCount} · summaries {summaryPendingCount} · trims {translationTrimTotal}
+                  {t("translations")}{translationPendingCount} {" "}{t("· summaries")}{" "}{summaryPendingCount} {" "}{t("· trims")}{" "}{translationTrimTotal}
                 </span>
               </div>
               <div className={`diagnostic-card delay-card delay-${audioInputBacklogSeconds >= 5 ? "warn" : "ok"}`}>
-                <span className="diagnostic-label">Audio Backlog</span>
+                <span className="diagnostic-label">{t("Audio Backlog")}</span>
                 <strong className="diagnostic-value">{formatLagSeconds(audioInputBacklogSeconds)}</strong>
-                <span className="diagnostic-note">input queue drops {audioInputQueueDropTotal}</span>
+                <span className="diagnostic-note">{t("input queue drops")}{" "}{audioInputQueueDropTotal}</span>
               </div>
               <div className="diagnostic-card">
-                <span className="diagnostic-label">Audio Drops</span>
+                <span className="diagnostic-label">{t("Audio Drops")}</span>
                 <strong className="diagnostic-value">{audioDropTotal}</strong>
-                <span className="diagnostic-note">capture queue dropped chunks</span>
+                <span className="diagnostic-note">{t("capture queue dropped chunks")}</span>
               </div>
               <div className="diagnostic-card">
-                <span className="diagnostic-label">Backpressure</span>
+                <span className="diagnostic-label">{t("Backpressure")}</span>
                 <strong className="diagnostic-value">{backpressureAgeSeconds != null ? "recent" : "clear"}</strong>
                 <span className="diagnostic-note">
                   {backpressureAgeSeconds != null
-                    ? `last seen ${formatLagSeconds(backpressureAgeSeconds)} ago at ${formatElapsedSeconds(sessionStats?.last_backpressure_elapsed_seconds)}`
-                    : "no recent slow-ASR flush"}
+                    ? t("last seen {0} ago at {1}", formatLagSeconds(backpressureAgeSeconds), formatElapsedSeconds(sessionStats?.last_backpressure_elapsed_seconds))
+                    : t("no recent slow-ASR flush")}
                 </span>
               </div>
               </>)}
@@ -1981,27 +1987,23 @@ export default function App() {
       {restartPromptOpen && (
         <div className="confirm-overlay" role="dialog" aria-modal="true" aria-labelledby="restart-dialog-title">
           <div className="confirm-dialog">
-            <h3 id="restart-dialog-title">Start a new meeting?</h3>
+            <h3 id="restart-dialog-title">{t("Start a new meeting?")}</h3>
             <p>
-              Starting again will clear the current transcript, summaries, bookmarks, and notes from the screen.
-            </p>
+              {t("Starting again will clear the current transcript, summaries, bookmarks, and notes from the screen.")}</p>
             <p className="muted">
-              Save this meeting first if you want to keep an export copy before opening a new session.
-            </p>
+              {t("Save this meeting first if you want to keep an export copy before opening a new session.")}</p>
             <div className="confirm-actions">
               <button type="button" className="secondary-action-btn" onClick={() => setRestartPromptOpen(false)} disabled={exporting}>
-                Cancel
-              </button>
+                {t("Cancel")}</button>
               <button type="button" className="danger-action-btn" onClick={handleRestartWithoutSave} disabled={exporting}>
-                Start Without Saving
-              </button>
+                {t("Start Without Saving")}</button>
               <button type="button" className={`primary-export-btn ${exporting && exportIntent === "restart" ? "button-busy" : ""}`.trim()} onClick={handleSaveAndRestart} disabled={exporting} aria-busy={exporting && exportIntent === "restart"}>
-                {exporting ? "Saving…" : "Save and Start New"}
+                {exporting ? t("Saving…") : t("Save and Start New")}
               </button>
             </div>
             {(exporting || actionFeedback) && (
               <p className={`confirm-status ${exporting ? "is-busy" : "is-success"}`}>
-                {exporting ? "Saving the current meeting export before opening a new session…" : actionFeedback}
+                {exporting ? t("Saving the current meeting export before opening a new session…") : (actionFeedback ? t(actionFeedback) : null)}
               </p>
             )}
           </div>

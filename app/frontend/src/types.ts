@@ -24,6 +24,9 @@ export interface TranscriptSegment {
   translations: Partial<Record<LanguageCode, string>>;
   created_at: string;
   emitted_at_elapsed_seconds?: number | null;
+  status?: "partial" | "final";
+  revision?: number;
+  sequence?: number | null;
 }
 
 export interface SummarySnapshot {
@@ -41,7 +44,7 @@ export interface SummarySnapshot {
 }
 
 export interface ReportBlock {
-  type: "paragraph" | "bullet" | "quote" | "action" | "concept" | "timeline" | "comparison" | "argument" | "statistic" | "conclusion";
+  type: "paragraph" | "bullet" | "quote" | "action" | "concept" | "step" | "timeline" | "comparison" | "argument" | "statistic" | "conclusion";
   title: string;
   text: string;
   detail: string;
@@ -51,7 +54,7 @@ export interface ReportBlock {
 export interface ReportSection {
   id: string;
   title: string;
-  layout_type: "text" | "concept" | "timeline" | "comparison" | "argument" | "statistic" | "conclusion";
+  layout_type: "text" | "concept" | "step_flow" | "timeline" | "comparison" | "argument" | "statistic" | "conclusion";
   blocks: ReportBlock[];
 }
 
@@ -72,6 +75,17 @@ export interface ReportRevision {
   revision: number;
   document: ReportDocument;
   created_at: string;
+}
+
+export interface FinalSummaryJob {
+  id: string;
+  meeting_id: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  language: LanguageCode;
+  attempts: number;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Note {
@@ -130,6 +144,8 @@ export interface SessionStatePayload {
   weak_rescue_emitted: number;
   weak_rescue_buffer_seconds: number;
   summary_pending_count: number;
+  inference_memory_free_percent?: number | null;
+  inference_defer_reason?: string | null;
   translation_pending_count: number;
   translation_backlog_trim_total: number;
   audio_drop_total: number;
@@ -141,6 +157,7 @@ export interface SessionStatePayload {
   fast_preview_attempts: number;
   fast_preview_emitted: number;
   fast_preview_skipped: number;
+  fast_preview_skip_reason?: string | null;
   fast_preview_last_audio_seconds: number | null;
   fast_preview_last_wall_seconds: number | null;
   fast_preview_realtime_factor: number | null;
@@ -165,12 +182,14 @@ export interface SessionStatePayload {
 }
 
 export type SessionEvent =
+  | { type: "session_sync"; payload: { state: SessionStatePayload; segments: TranscriptSegment[]; snapshots: SummarySnapshot[]; notes: Note[]; report: ReportRevision | null; preview: TranscriptSegment | null } }
   | { type: "transcript_segment"; payload: TranscriptSegment }
   | { type: "transcript_segment_removed"; payload: { segment_id: string } }
   | { type: "transcript_translation"; payload: { segment_id: string; language: LanguageCode; text: string } }
   | { type: "transcript_preview"; payload: { segment: TranscriptSegment | null; preview_backend?: string; preview_is_experimental?: boolean; preview_quality_note?: string | null } }
   | { type: "summary_snapshot"; payload: SummarySnapshot }
   | { type: "report_revision"; payload: ReportRevision }
+  | { type: "final_summary_job"; payload: FinalSummaryJob }
   | { type: "note_saved"; payload: Note }
   | { type: "session_state"; payload: SessionStatePayload }
   | { type: "error"; payload: { code: string; message: string } };

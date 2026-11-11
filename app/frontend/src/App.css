@@ -2393,3 +2393,11 @@ html, body, #root {
 .report-top { margin-top:1rem; }
 @media (prefers-reduced-motion:reduce) { .report-view * { scroll-behavior:auto !important; transition:none !important; } }
 @media print { .report-view { background:white; color:black; } .report-view button,.report-nav,.report-controls { display:none; } .report-card { break-inside:avoid; background:white; color:black; } }
+.report-grid--comparison { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.report-grid--step_flow { counter-reset:report-step; }
+.report-grid--step_flow .report-card::before { counter-increment:report-step; content:counter(report-step,decimal-leading-zero); display:block; color:var(--report-accent); font-size:.8rem; letter-spacing:.12em; font-weight:700; margin-bottom:.7rem; }
+.report-grid--timeline { border-left:2px solid var(--report-border); padding-left:1.2rem; margin-left:.5rem; }
+.report-grid--timeline .report-card { position:relative; }
+.report-grid--timeline .report-card::before { content:""; position:absolute; left:-1.64rem; top:1.5rem; width:.65rem; height:.65rem; border-radius:50%; background:#55c6a9; }
+.report-card--statistic p { font-size:clamp(1.25rem,3vw,2rem); font-weight:700; color:var(--report-accent); }
+@media (max-width:600px) { .report-grid--comparison { grid-template-columns:1fr; } }
