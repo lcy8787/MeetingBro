@@ -45,10 +45,12 @@ export interface SummarySnapshot {
 }
 
 export interface ReportBlock {
-  type: "paragraph" | "bullet" | "quote" | "action" | "concept" | "step" | "timeline" | "comparison" | "argument" | "statistic" | "conclusion";
+  type: "paragraph" | "bullet" | "quote" | "action" | "concept" | "step" | "timeline" | "comparison" | "argument" | "statistic" | "conclusion" | "table" | "pros_cons" | "insight";
   title: string;
   text: string;
   detail: string;
+  columns?: string[];
+  rows?: { cells: string[]; source_segment_ids: string[] }[];
   options?: { label: string; text: string; source_segment_ids: string[] }[];
   source_segment_ids: string[];
 }
@@ -56,7 +58,7 @@ export interface ReportBlock {
 export interface ReportSection {
   id: string;
   title: string;
-  layout_type: "text" | "concept" | "step_flow" | "timeline" | "comparison" | "argument" | "statistic" | "conclusion";
+  layout_type: "text" | "concept" | "step_flow" | "timeline" | "comparison" | "argument" | "statistic" | "conclusion" | "mixed";
   blocks: ReportBlock[];
 }
 

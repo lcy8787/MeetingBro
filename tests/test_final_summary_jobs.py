@@ -389,7 +389,7 @@ def test_stop_generates_one_final_report_after_flushing_transcript_even_with_liv
         calls = 0
         def chat(self, **kwargs):
             self.calls += 1
-            evidence = json.loads(kwargs['user'])
+            evidence = json.loads(kwargs['user'])['transcript']
             assert [item['text'] for item in evidence] == ['Final tail discussed.']
             return json.dumps({'blocks': [{'text': 'Final tail discussed.', 'source_segment_ids': [evidence[0]['id']]}]})
     client = Client()

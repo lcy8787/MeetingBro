@@ -4,6 +4,7 @@ import { t, uiLocale, useI18n } from "../i18n";
 import { deleteMeeting, exportMeetingById, retryFinalSummaryJob } from "../system/backendApi";
 import type { FinalSummaryJob, ReportRevision, SessionState, SummarySnapshot, TranscriptSegment } from "../types";
 import { ReportView } from "./ReportView";
+import { blockText } from "./reportComponents";
 import { AudioLevelMeter } from "./AudioLevelMeter";
 import { useRecordingHistory } from "./useRecordingHistory";
 import { useSummaryGeneration } from "./useSummaryGeneration";
@@ -69,7 +70,7 @@ function newestReport(reports: ReportRevision[]) {
 
 function reportText(report: ReportRevision) {
   const { document: doc } = report;
-  const blocks = (items: typeof doc.takeaways) => items.flatMap(item => [item.title, item.text, item.detail, ...(item.options ?? []).flatMap(option => [option.label, option.text])]);
+  const blocks = (items: typeof doc.takeaways) => items.map(blockText);
   return [doc.title, doc.executive_summary, ...blocks(doc.takeaways),
     ...doc.sections.flatMap(section => [section.title, ...blocks(section.blocks)])].filter(Boolean).join("\n\n");
 }
@@ -154,6 +155,13 @@ export function RecorderView(props: RecorderProps) {
   const history = useRecordingHistory(props.ready, drawer, props.active, currentId, savedId, savedId === currentId && !!currentId);
   const { detail } = history;
   const generation = useSummaryGeneration(currentId, props.active && props.state === "running", props.segments, props.report);
+  useEffect(() => {
+    if (Object.keys(generation.reports).length) history.refreshList();
+  }, [generation.reports, history.refreshList]);
+  const currentReportTitle = newestReport([
+    ...(generation.generated ? [generation.generated] : []),
+    ...(props.report?.meeting_id === currentId && props.report.report_type === "meeting" ? [props.report] : []),
+  ])?.document.title;
   const [tab, setTab] = useState<Tab>("summary");
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState(false);
@@ -233,6 +241,7 @@ export function RecorderView(props: RecorderProps) {
     ...(savedId ? detail?.reports ?? [] : props.report ? [props.report] : []),
     ...(generatedReport ? [generatedReport] : []),
   ]);
+  const viewedTitle = (report?.report_type === "meeting" ? report.document.title : "") || item?.title;
   const job = previousJob?.status === "failed" && report && report.created_at > previousJob.updated_at ? null : previousJob;
   const summary = savedId ? summaryOf(detail?.summaries ?? []) : props.summary?.generation_method === "llm" ? props.summary : undefined;
   const transcript = savedId ? detail?.transcript ?? [] : props.segments;
@@ -306,7 +315,7 @@ export function RecorderView(props: RecorderProps) {
     </div>
     <div className="mb-history-title">{t("Recording history")}</div>
     {props.active && <button className="mb-history-item mb-current" aria-current={viewingCurrent ? "true" : undefined}
-      onClick={() => select(null)}><strong>{t("Current recording")}</strong><small><i />{sessionTitle} · {clock(props.elapsed)}</small></button>}
+      onClick={() => select(null)}><strong>{currentReportTitle || t("Current recording")}</strong><small><i />{sessionTitle} · {clock(props.elapsed)}</small></button>}
     <div className="mb-history-list">
       {history.listError && <p>{t("Could not load history: {0}", history.listError)} <button onClick={history.refreshList}>{t("Retry")}</button></p>}
       {!history.list && !history.listError && <p>{t("Loading…")}</p>}
@@ -347,7 +356,7 @@ export function RecorderView(props: RecorderProps) {
             <div className="mb-menu">
               <button type="button" onClick={() => void copy()} disabled={busy || !readyToCopy}>{t("Copy")}</button>
               <button type="button" onClick={() => void exportRecording()} disabled={busy || !viewedId}>{t("Export")}</button>
-              {savedId && <button type="button" className="mb-delete" disabled={busy || generation.busy} onClick={() => { if (shareMenu.current) shareMenu.current.open = false; setPendingDelete({ id: savedId, title: item?.title || t("Untitled recording") }); }}>{t("Delete")}</button>}
+              {savedId && <button type="button" className="mb-delete" disabled={busy || generation.busy} onClick={() => { if (shareMenu.current) shareMenu.current.open = false; setPendingDelete({ id: savedId, title: viewedTitle || t("Untitled recording") }); }}>{t("Delete")}</button>}
             </div>
           </details>
           <button type="button" className="mb-pill mb-settings" onClick={settings}
@@ -377,7 +386,7 @@ export function RecorderView(props: RecorderProps) {
         </div>}
         {!blank && <div className="mb-document">
           {tab === "transcript" && <header className="mb-doc-heading"><small>{t("Original text")}</small>
-            <h2>{item?.title || (isLive ? t("Current recording") : t("Transcript"))}</h2>
+            <h2>{viewedTitle || (isLive ? t("Current recording") : t("Transcript"))}</h2>
             {item && <time>{dateLabel(item.started_at)}</time>}
           </header>}
           {loading && <p role="status" className="mb-status">{t("Loading meeting…")}</p>}
@@ -396,7 +405,7 @@ export function RecorderView(props: RecorderProps) {
               })}>{t("Retry")}</button>}
             </p>}
             {report && <ReportView key={`${report.meeting_id}-${report.report_id}`} report={report} transcript={transcript} />}
-            {!report && summary && <section className="mb-summary"><h2>{item?.title || t("Summary")}</h2><p>{summary.content}</p></section>}
+            {!report && summary && <section className="mb-summary"><h2>{viewedTitle || t("Summary")}</h2><p>{summary.content}</p></section>}
             {!report && !summary && !history.detailError && <p className="mb-status">{t("No model-generated summary yet. Use Generate summary or enable automatic summaries.")}</p>}
 
           </>}

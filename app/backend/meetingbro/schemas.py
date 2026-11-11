@@ -64,21 +64,28 @@ class ReportOption(BaseModel):
     source_segment_ids: list[str] = Field(default_factory=list)
 
 
+class ReportTableRow(BaseModel):
+    cells: list[str] = Field(min_length=2, max_length=6)
+    source_segment_ids: list[str] = Field(min_length=1)
+
+
 class ReportBlock(BaseModel):
     """Plain text only; clients must render all fields as text, never HTML."""
 
-    type: Literal["paragraph", "bullet", "quote", "action", "concept", "step", "timeline", "comparison", "argument", "statistic", "conclusion"] = "paragraph"
+    type: Literal["paragraph", "bullet", "quote", "action", "concept", "step", "timeline", "comparison", "argument", "statistic", "conclusion", "table", "pros_cons", "insight"] = "paragraph"
     text: str
     title: str = ""
     detail: str = ""
     options: list[ReportOption] = Field(default_factory=list, max_length=8)
+    columns: list[str] = Field(default_factory=list, max_length=6)
+    rows: list[ReportTableRow] = Field(default_factory=list, max_length=12)
     source_segment_ids: list[str] = Field(default_factory=list)
 
 
 class ReportSection(BaseModel):
     id: str = ""
     title: str = ""
-    layout_type: Literal["text", "concept", "step_flow", "timeline", "comparison", "argument", "statistic", "conclusion"] = "text"
+    layout_type: Literal["text", "concept", "step_flow", "timeline", "comparison", "argument", "statistic", "conclusion", "mixed"] = "text"
     blocks: list[ReportBlock] = Field(default_factory=list)
 
 

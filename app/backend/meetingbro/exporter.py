@@ -317,6 +317,9 @@ def export_meeting(
                 for block in section.blocks:
                     lines.extend(filter(None, (block.title, block.text, block.detail)))
                     lines.extend(f'{option.label}: {option.text}' for option in block.options)
+                    if block.columns:
+                        lines.append(' | '.join(block.columns))
+                        lines.extend(' | '.join(row.cells) for row in block.rows)
             summary_path.write_text('\n\n'.join(filter(None, lines)) + '\n', encoding='utf-8')
             files.insert(1, 'summary.md')
     if _write_clean_conversation(clean_conversation_path, meeting=meeting, snapshots=snapshots):

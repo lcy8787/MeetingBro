@@ -675,7 +675,7 @@ async def list_meetings_endpoint(
     items: list[MeetingListItem] = []
     for m in storage.list_meetings(limit=limit):
         first_text = str(m.get("first_text") or "").strip()
-        title = first_text[:80] if first_text else None
+        title = str(m.get("report_title") or "").strip() or (first_text[:80] if first_text else None)
         items.append(
             MeetingListItem(
                 id=str(m["id"]),

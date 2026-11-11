@@ -152,6 +152,7 @@ class Storage:
         blocks = [*report.document.takeaways, *(b for s in report.document.sections for b in s.blocks)]
         citations = {source for block in blocks for source in block.source_segment_ids}
         citations.update(source for block in blocks for option in block.options for source in option.source_segment_ids)
+        citations.update(source for block in blocks for row in block.rows for source in row.source_segment_ids)
         citations.update(report.document.executive_summary_source_segment_ids)
         with self._lock:
             try:
@@ -273,6 +274,7 @@ class Storage:
                     blocks = [*report.document.takeaways, *(block for section in report.document.sections for block in section.blocks)]
                     citations = {key for block in blocks for key in block.source_segment_ids}
                     citations.update(key for block in blocks for option in block.options for key in option.source_segment_ids)
+                    citations.update(key for block in blocks for row in block.rows for key in row.source_segment_ids)
                     citations.update(report.document.executive_summary_source_segment_ids)
                     valid = {r[0] for r in self._conn.execute("SELECT id FROM transcript_segments WHERE meeting_id=?", (row[0],))}
                     if not citations <= valid:
@@ -358,7 +360,12 @@ class Storage:
                   m.preferred_summary_language,
                   (SELECT COUNT(*) FROM transcript_segments s WHERE s.meeting_id = m.id) AS segment_count,
                   (SELECT s2.text FROM transcript_segments s2 WHERE s2.meeting_id = m.id
-                     ORDER BY s2.start_time ASC LIMIT 1) AS first_text
+                     ORDER BY s2.start_time ASC LIMIT 1) AS first_text,
+                  (SELECT json_extract(r.document, '$.title') FROM report_revisions r
+                     WHERE r.meeting_id = m.id AND r.report_type = 'meeting'
+                       AND json_extract(r.document, '$.generation_method') = 'llm'
+                       AND trim(COALESCE(json_extract(r.document, '$.title'), '')) != ''
+                     ORDER BY r.created_at DESC, r.revision DESC, r.rowid DESC LIMIT 1) AS report_title
                 FROM meetings m
                 ORDER BY m.started_at DESC
                 LIMIT ?
@@ -373,6 +380,7 @@ class Storage:
                 "preferred_summary_language": r[3],
                 "segment_count": r[4],
                 "first_text": r[5],
+                "report_title": r[6],
             }
             for r in rows
         ]
