@@ -4,6 +4,7 @@ import type { ReportRevision, TranscriptSegment } from "../types";
 
 import { blockText, Evidence, ReportBlockView as Block } from "./reportComponents";
 import "../reportEditorial.css";
+import { ReportSectionContent } from "./reportLayout";
 
 interface Props {
   report: ReportRevision;
@@ -46,7 +47,7 @@ export function ReportView({ report, transcript }: Props) {
       <div className="report-eyebrow">PART {String(i + 1).padStart(2, "0")}</div>
       <div className="report-section__heading"><h3>{section.title}</h3><button type="button" onClick={() => void copy(sectionText(i))}>{t("Copy section")}</button></div>
       <details open><summary>{t("Show or hide section")}</summary>
-        <div className={`report-grid report-grid--${section.layout_type}`}>{section.blocks.map((block, j) => <Block key={`${report.revision}-${j}`} block={block} sources={sources} />)}</div>
+        <ReportSectionContent key={`${report.report_id}-${report.revision}-${i}`} section={section} sources={sources} />
       </details>
     </section>)}
     <button className="report-top" type="button" onClick={() => root.current?.scrollIntoView({ behavior: "smooth" })}>{t("Back to top")}</button>

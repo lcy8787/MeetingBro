@@ -153,6 +153,7 @@ class Storage:
         citations = {source for block in blocks for source in block.source_segment_ids}
         citations.update(source for block in blocks for option in block.options for source in option.source_segment_ids)
         citations.update(source for block in blocks for row in block.rows for source in row.source_segment_ids)
+        citations.update(source for block in blocks for item in [*block.data, *block.nodes, *block.edges, *block.cells] for source in item.source_segment_ids)
         citations.update(report.document.executive_summary_source_segment_ids)
         with self._lock:
             try:
@@ -275,6 +276,7 @@ class Storage:
                     citations = {key for block in blocks for key in block.source_segment_ids}
                     citations.update(key for block in blocks for option in block.options for key in option.source_segment_ids)
                     citations.update(key for block in blocks for row in block.rows for key in row.source_segment_ids)
+                    citations.update(key for block in blocks for item in [*block.data, *block.nodes, *block.edges, *block.cells] for key in item.source_segment_ids)
                     citations.update(report.document.executive_summary_source_segment_ids)
                     valid = {r[0] for r in self._conn.execute("SELECT id FROM transcript_segments WHERE meeting_id=?", (row[0],))}
                     if not citations <= valid:

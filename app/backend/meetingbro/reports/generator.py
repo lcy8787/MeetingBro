@@ -11,7 +11,10 @@ from typing import Protocol, Sequence
 
 from ..llm.openai_compatible import LLMResponseError
 from ..schemas import LanguageCode, ReportBlock, ReportDocument, ReportSection, TranscriptSegment
-from .components import REPORT_SCHEMA as _REPORT_SCHEMA, planning_prompt
+from ..report_contracts import TABLE_TYPES, component_kind
+from .design import validate_layout, review_design
+from .evidence import validate_visual
+from .agent import VisualDesignAgent
 
 
 class ChatClient(Protocol):
@@ -86,7 +89,7 @@ def _validated_blocks(items: list, sources: dict[str, str]) -> list[ReportBlock]
             raise ValueError('A report block has no text')
         visible = ' '.join((block.title, block.text, block.detail, *block.columns))
         _validate_text(visible, block.source_segment_ids, sources)
-        if block.type == 'statistic':
+        if component_kind(block.type) == 'statistic':
             values = visible + ' ' + ' '.join(o.label + ' ' + o.text for o in block.options)
             if not _NUMBERS.search(values) and not _CHINESE_NUMBERS.search(values):
                 raise ValueError('Statistic has no verifiable numeric value')
@@ -94,7 +97,7 @@ def _validated_blocks(items: list, sources: dict[str, str]) -> list[ReportBlock]
             if not option.label.strip() or not option.text.strip():
                 raise ValueError('Interactive option has no label or explanation')
             _validate_text(option.label + ' ' + option.text, option.source_segment_ids, sources)
-        if block.type == 'table':
+        if block.type in TABLE_TYPES:
             if len(block.columns) < 2 or len(block.rows) < 2 or block.options:
                 raise ValueError('Table needs comparable columns and rows')
             if any(not column.strip() for column in block.columns):
@@ -105,12 +108,14 @@ def _validated_blocks(items: list, sources: dict[str, str]) -> list[ReportBlock]
                 _validate_text(' '.join(row.cells), row.source_segment_ids, sources)
         elif block.columns or block.rows:
             raise ValueError('Only tables may contain rows or columns')
+        validate_visual(block, sources, _validate_text)
         blocks.append(block)
     return blocks
 
 
 def _validated_part(raw: str, chunk: list[tuple[str, str]]) -> ReportDocument:
     payload = _payload(raw)
+    payload.pop('tool_request', None)
     sources: dict[str, str] = {}
     for key, text in chunk:
         sources[key] = sources.get(key, '') + ' ' + text
@@ -139,6 +144,7 @@ def _validated_part(raw: str, chunk: list[tuple[str, str]]) -> ReportDocument:
         ids = list(dict.fromkeys(key for block in section.blocks for key in block.source_segment_ids))
         _validate_text(section.title, ids, sources)
         all_ids.extend(ids)
+        validate_layout(section)
         specialized = {'concept': 'concept', 'step_flow': 'step', 'timeline': 'timeline',
                        'comparison': 'comparison', 'argument': 'argument',
                        'statistic': 'statistic', 'conclusion': 'conclusion'}
@@ -162,8 +168,9 @@ def _same_sources(left: list[str], right: list[str], metadata: dict[str, Transcr
 
 def _content_key(block: ReportBlock) -> str:
     data = block.model_dump(exclude={'source_segment_ids'})
-    for item in [*data['options'], *data['rows']]:
-        item.pop('source_segment_ids', None)
+    for field in ['options', 'rows', 'data', 'nodes', 'edges', 'cells']:
+        for item in data[field]:
+            item.pop('source_segment_ids', None)
     # Whitespace differences are not new information; preserve wording and numbers.
     def normalized(value):
         if isinstance(value, str):
@@ -178,6 +185,7 @@ def _content_key(block: ReportBlock) -> str:
 
 def _deduplicate(doc: ReportDocument, metadata: dict[str, TranscriptSegment]) -> None:
     """Consolidate topic headings and exact content, without guessing semantic equivalence."""
+    original = {id(s): [id(b) for b in s.blocks] for s in doc.sections}
     sections: list[ReportSection] = []
     titles: dict[str, ReportSection] = {}
     seen: dict[str, list[ReportBlock]] = {}
@@ -186,6 +194,7 @@ def _deduplicate(doc: ReportDocument, metadata: dict[str, TranscriptSegment]) ->
         target = titles.get(title_key) if title_key else None
         if target is None:
             target = section.model_copy(update={'blocks': []})
+            original[id(target)] = original[id(section)]
             sections.append(target)
             if title_key:
                 titles[title_key] = target
@@ -196,14 +205,19 @@ def _deduplicate(doc: ReportDocument, metadata: dict[str, TranscriptSegment]) ->
             duplicate = next((other for other in seen.get(key, [])
                 if _same_sources(other.source_segment_ids, block.source_segment_ids, metadata)
                 and all(_same_sources(a.source_segment_ids, b.source_segment_ids, metadata)
-                        for a, b in zip([*other.options, *other.rows], [*block.options, *block.rows]))), None)
+                        for a, b in zip([*other.options, *other.rows, *other.data, *other.nodes, *other.edges, *other.cells],
+                                        [*block.options, *block.rows, *block.data, *block.nodes, *block.edges, *block.cells]))), None)
             if duplicate is not None:
-                for left, right in [(duplicate, block), *zip(duplicate.options, block.options), *zip(duplicate.rows, block.rows)]:
+                for left, right in [(duplicate, block), *(pair for field in ['options', 'rows', 'data', 'nodes', 'edges', 'cells']
+                                                       for pair in zip(getattr(duplicate, field), getattr(block, field)))]:
                     left.source_segment_ids = list(dict.fromkeys([*left.source_segment_ids, *right.source_segment_ids]))
             else:
                 seen.setdefault(key, []).append(block)
                 target.blocks.append(block)
     doc.sections = [section for section in sections if section.blocks]
+    for section in doc.sections:
+        if [id(b) for b in section.blocks] != original.get(id(section)):
+            section.layout = None  # Recompose after merges/deletions so references cannot drift.
 
 
 def generate_report(segments: Sequence[TranscriptSegment], *, language: LanguageCode,
@@ -223,7 +237,9 @@ def generate_report(segments: Sequence[TranscriptSegment], *, language: Language
                         'covered': [{'type': b.type, 'title': b.title, 'text': b.text[:240],
                                      'speakers': list(dict.fromkeys(metadata[key].speaker_id for key in b.source_segment_ids)),
                                      'options': [{'label': o.label, 'text': o.text[:120]} for o in b.options],
-                                     'columns': b.columns, 'rows': [r.cells for r in b.rows]}
+                                     'columns': b.columns, 'rows': [r.cells for r in b.rows],
+                                     'visuals': {field: [item.model_dump(exclude={'source_segment_ids'}) for item in getattr(b, field)]
+                                                 for field in ['data', 'nodes', 'edges', 'cells'] if getattr(b, field)}}
                                     for b in section.blocks][-4:]}
                        for section in result.sections][-12:]
             while len(json.dumps(outline, ensure_ascii=False)) > 10000 and outline:
@@ -233,11 +249,11 @@ def generate_report(segments: Sequence[TranscriptSegment], *, language: Language
                 {'id': key, 'text': text, 'speaker_id': metadata[key].speaker_id,
                  'start_time': metadata[key].start_time, 'end_time': metadata[key].end_time}
                 for key, text in chunk]}
-            raw = client.chat(system=planning_prompt(_LANGUAGES[language]),
-                              user=json.dumps(evidence, ensure_ascii=False), max_tokens=4800,
-                              temperature=0.1, response_schema=_REPORT_SCHEMA)
-            # Invalid output fails without a hidden paid repair request.
-            part = _validated_part(raw, chunk)
+            part = VisualDesignAgent(client, _validated_part).run(evidence, chunk, _LANGUAGES[language])
+            for section in part.sections:
+                for block in section.blocks:
+                    if block.speaker_id and any(metadata[key].speaker_id != block.speaker_id for key in block.source_segment_ids):
+                        raise ValueError('Speaker attribution differs from cited transcript metadata')
             if not result.title:
                 result.title = part.title
             if part.executive_summary and part.executive_summary not in result.executive_summary:
@@ -253,6 +269,7 @@ def generate_report(segments: Sequence[TranscriptSegment], *, language: Language
                 else:
                     target = topics[topic_id]
                     target.blocks.extend(section.blocks)
+                    target.layout = None
                     if target.layout_type != section.layout_type:
                         target.layout_type = 'mixed'
             _deduplicate(result, metadata)
@@ -266,5 +283,6 @@ def generate_report(segments: Sequence[TranscriptSegment], *, language: Language
             ) from exc
     if not result.title:
         result.title = result.sections[0].title or {'zh': '會議報告', 'en': 'Meeting report', 'de': 'Besprechungsbericht'}[language]
+    result.design_review = review_design(result, repair=True)
     # The hero orients the reader; body blocks are no longer copied into it.
     return result

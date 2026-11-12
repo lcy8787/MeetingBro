@@ -43,3 +43,6 @@ meetingbro-backend = "meetingbro.main:run"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["meetingbro*"]
+
+[tool.setuptools.package-data]
+"meetingbro.reports" = ["design.css"]

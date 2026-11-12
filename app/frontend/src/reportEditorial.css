@@ -1,3 +1,4 @@
+@import "../../backend/meetingbro/reports/design.css";
 /* Editorial surface: sections establish rhythm; only semantic highlights use panels. */
 .report-view .report-section,
 .recorder-shell .report-view .report-section { background:transparent; border:0; border-top:1px solid var(--report-border); border-radius:0; margin:2.5rem 0; padding:2rem 0 0; }

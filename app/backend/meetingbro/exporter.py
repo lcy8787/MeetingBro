@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 from .schemas import ExportMeetingResponse, LanguageCode, Note, SummarySnapshot, TranscriptSegment
 from .storage.db import Storage
+from .reports.visual_html import visual_text
 from .reports.standalone import write_standalone_report
 
 
@@ -317,6 +318,7 @@ def export_meeting(
                 for block in section.blocks:
                     lines.extend(filter(None, (block.title, block.text, block.detail)))
                     lines.extend(f'{option.label}: {option.text}' for option in block.options)
+                    lines.extend(visual_text(block))
                     if block.columns:
                         lines.append(' | '.join(block.columns))
                         lines.extend(' | '.join(row.cells) for row in block.rows)

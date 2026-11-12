@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+from .report_contracts import ComponentType
 
 
 LanguageCode = Literal["zh", "en", "de"]
@@ -58,38 +60,100 @@ class SummarySnapshot(BaseModel):
     created_at: datetime
 
 
-class ReportOption(BaseModel):
+class ReportDataModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class ReportOption(ReportDataModel):
     label: str
     text: str
     source_segment_ids: list[str] = Field(default_factory=list)
 
 
-class ReportTableRow(BaseModel):
+class ReportTableRow(ReportDataModel):
     cells: list[str] = Field(min_length=2, max_length=6)
     source_segment_ids: list[str] = Field(min_length=1)
 
 
-class ReportBlock(BaseModel):
-    """Plain text only; clients must render all fields as text, never HTML."""
+class ReportDatum(ReportDataModel):
+    label: str
+    value: str  # Exact spoken numeric token, never a model-derived float.
+    unit: str = ""
+    series: str = ""
+    evidence_quote: str = ""
+    source_segment_ids: list[str] = Field(min_length=1)
 
-    type: Literal["paragraph", "bullet", "quote", "action", "concept", "step", "timeline", "comparison", "argument", "statistic", "conclusion", "table", "pros_cons", "insight"] = "paragraph"
+
+class ReportGraphNode(ReportDataModel):
+    id: str
+    label: str
+    text: str = ""
+    source_segment_ids: list[str] = Field(min_length=1)
+
+
+class ReportGraphEdge(ReportDataModel):
+    source: str
+    target: str
+    label: str
+    relation: Literal["related", "supports", "opposes", "causes", "depends_on", "branch", "flow"] = "related"
+    value: str = ""
+    unit: str = ""
+    evidence_quote: str
+    source_segment_ids: list[str] = Field(min_length=1)
+
+
+class ReportMatrixCell(ReportDataModel):
+    row: str
+    column: str
+    value: str
+    unit: str = ""
+    evidence_quote: str = ""
+    source_segment_ids: list[str] = Field(min_length=1)
+
+
+class ReportBlock(ReportDataModel):
+    """Plain data only; renderers own all markup, styles and interaction code."""
+    type: ComponentType = "paragraph"
     text: str
     title: str = ""
     detail: str = ""
     options: list[ReportOption] = Field(default_factory=list, max_length=8)
     columns: list[str] = Field(default_factory=list, max_length=6)
     rows: list[ReportTableRow] = Field(default_factory=list, max_length=12)
+    data: list[ReportDatum] = Field(default_factory=list, max_length=48)
+    nodes: list[ReportGraphNode] = Field(default_factory=list, max_length=16)
+    edges: list[ReportGraphEdge] = Field(default_factory=list, max_length=24)
+    cells: list[ReportMatrixCell] = Field(default_factory=list, max_length=48)
+    speaker_id: str = ""
+    evidence_quote: str = ""
     source_segment_ids: list[str] = Field(default_factory=list)
 
 
-class ReportSection(BaseModel):
+class LayoutNode(ReportDataModel):
+    op: Literal["stack", "grid", "split", "tabs", "accordion", "block"] = "stack"
+    block_index: int | None = Field(default=None, ge=0)
+    columns: int = Field(default=1, ge=1, le=4)
+    span: int = Field(default=12, ge=1, le=12)
+    emphasis: Literal["quiet", "normal", "strong"] = "normal"
+    children: list["LayoutNode"] = Field(default_factory=list, max_length=24)
+
+
+class ReportSection(ReportDataModel):
     id: str = ""
     title: str = ""
     layout_type: Literal["text", "concept", "step_flow", "timeline", "comparison", "argument", "statistic", "conclusion", "mixed"] = "text"
     blocks: list[ReportBlock] = Field(default_factory=list)
+    layout: LayoutNode | None = None
 
 
-class ReportDocument(BaseModel):
+class DesignFinding(ReportDataModel):
+    section_id: str
+    code: str
+    message: str
+    repaired: bool = False
+
+
+class ReportDocument(ReportDataModel):
     title: str = ""
     executive_summary: str = ""
     executive_summary_source_segment_ids: list[str] = Field(default_factory=list)
@@ -97,6 +161,7 @@ class ReportDocument(BaseModel):
     sections: list[ReportSection] = Field(default_factory=list)
     generation_method: Literal["extractive", "llm", "mixed"] = "extractive"
     warnings: list[str] = Field(default_factory=list)
+    design_review: list[DesignFinding] = Field(default_factory=list)
 
 
 class ReportRevision(BaseModel):

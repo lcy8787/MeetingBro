@@ -56,7 +56,7 @@ const template = {content:{textContent:'Full report including hidden explanation
 const copyButton = new Element(); copyButton.dataset = {copy:'copy-full'};
 let clipboard = '';
 global.document = {
-  querySelectorAll: q => q === '[data-copy]' ? [copyButton] : [group],
+  querySelectorAll: q => q === '[data-copy]' ? [copyButton] : q === '[data-choices]' ? [group] : [],
   getElementById: id => id === 'copy-status' ? status : template,
   createElement: () => new Element(), body: {appendChild() {}}, execCommand: () => true,
 };
@@ -79,3 +79,37 @@ Object.defineProperty(global, 'navigator', {value:{clipboard:{writeText: async t
     path = tmp_path / 'test.cjs'
     path.write_text(harness + _SCRIPT + checks)
     subprocess.run(['node', str(path)], check=True)
+
+
+def test_standalone_series_filter_uses_attributes_for_svg_marks(tmp_path):
+    # SVGElement has no HTMLElement.hidden setter: assigning .hidden does not hide a mark.
+    harness = r'''
+const assert = require('node:assert/strict');
+class SvgMark {
+  constructor(series) { this.dataset = {series}; this.attributes = new Map(); }
+  toggleAttribute(name, enabled) { if (enabled) this.attributes.set(name, ''); else this.attributes.delete(name); }
+}
+class Button {
+  constructor(series) { this.dataset = {seriesSelect:series}; this.listeners = {}; this.attributes = {}; }
+  addEventListener(name, fn) { this.listeners[name] = fn; }
+  setAttribute(name, value) { this.attributes[name] = value; }
+  click() { this.listeners.click(); }
+}
+const all = new Button('-1'), first = new Button('0'), second = new Button('1');
+const buttons = [all, first, second], marks = [new SvgMark('0'), new SvgMark('1')];
+const group = {querySelectorAll: q => q === '[data-series-select]' ? buttons : q === '[data-series]' ? marks : []};
+global.document = {getElementById: () => ({}), querySelectorAll: q => q === '[data-visual]' ? [group] : []};
+'''
+    checks = r'''
+second.click();
+assert.equal(marks[0].attributes.has('hidden'), true);
+assert.equal(marks[1].attributes.has('hidden'), false);
+assert.equal(second.attributes['aria-pressed'], 'true');
+assert.equal(first.attributes['aria-pressed'], 'false');
+all.click();
+assert.equal(marks[0].attributes.has('hidden'), false);
+assert.equal(marks[1].attributes.has('hidden'), false);
+'''
+    path = tmp_path / 'svg-series.cjs'
+    path.write_text(harness + _SCRIPT + checks)
+    subprocess.run(['node',str(path)],check=True)

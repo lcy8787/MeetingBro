@@ -44,14 +44,38 @@ export interface SummarySnapshot {
   created_at: string;
 }
 
+export interface ReportDatum {
+  label: string;
+  value: string;
+  unit: string;
+  series: string;
+  evidence_quote: string;
+  source_segment_ids: string[];
+}
+
+export interface LayoutNode {
+  op: "stack" | "grid" | "split" | "tabs" | "accordion" | "block";
+  block_index: number | null;
+  columns: number;
+  span: number;
+  emphasis: "quiet" | "normal" | "strong";
+  children: LayoutNode[];
+}
+
 export interface ReportBlock {
-  type: "paragraph" | "bullet" | "quote" | "action" | "concept" | "step" | "timeline" | "comparison" | "argument" | "statistic" | "conclusion" | "table" | "pros_cons" | "insight";
+  type: "paragraph" | "bullet" | "quote" | "action" | "concept" | "step" | "timeline" | "comparison" | "argument" | "statistic" | "conclusion" | "table" | "pros_cons" | "insight" | "HeroSection" | "SectionHeader" | "EditorialText" | "SummaryCard" | "InsightCallout" | "ConclusionPanel" | "ComparisonCards" | "ComparisonMatrix" | "ProsCons" | "PerspectiveCards" | "SpecificationTable" | "Timeline" | "Stepper" | "ProcessFlow" | "CausalFlow" | "KeyMetrics" | "DataBars" | "BarChart" | "LineChart" | "DataTable" | "DecisionPanel" | "ActionItems" | "OpenQuestions" | "SpeakerQuote" | "TranscriptReference" | "Accordion" | "TabGroup" | "ExpandableDetails" | "KnowledgeGraph" | "ArgumentMap" | "DecisionTree" | "RiskMatrix" | "Heatmap" | "SankeyDiagram" | "InteractiveChart";
   title: string;
   text: string;
   detail: string;
   columns?: string[];
   rows?: { cells: string[]; source_segment_ids: string[] }[];
   options?: { label: string; text: string; source_segment_ids: string[] }[];
+  data?: ReportDatum[];
+  nodes?: { id: string; label: string; text: string; source_segment_ids: string[] }[];
+  edges?: { source: string; target: string; label: string; relation: string; value: string; unit: string; evidence_quote: string; source_segment_ids: string[] }[];
+  cells?: { row: string; column: string; value: string; unit: string; evidence_quote: string; source_segment_ids: string[] }[];
+  speaker_id?: string;
+  evidence_quote?: string;
   source_segment_ids: string[];
 }
 
@@ -60,6 +84,7 @@ export interface ReportSection {
   title: string;
   layout_type: "text" | "concept" | "step_flow" | "timeline" | "comparison" | "argument" | "statistic" | "conclusion" | "mixed";
   blocks: ReportBlock[];
+  layout?: LayoutNode | null;
 }
 
 export interface ReportDocument {
@@ -70,6 +95,7 @@ export interface ReportDocument {
   sections: ReportSection[];
   generation_method: "extractive" | "llm" | "mixed";
   warnings: string[];
+  design_review?: { section_id: string; code: string; message: string; repaired: boolean }[];
 }
 
 export interface ReportRevision {
