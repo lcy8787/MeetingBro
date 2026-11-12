@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from ..reports.live import update_live_report
-from ..reports.generator import generate_report
+from ..reports.generator import ReportGenerationError, generate_report
 from ..llm.openai_compatible import OpenAICompatibleClient
 from ..schemas import ReportRevision
 from ..resources.coordinator import InferenceCoordinator
@@ -105,7 +105,7 @@ class FinalSummaryWorker:
                     if self._report_only:
                         client = OpenAICompatibleClient.from_env()
                         if client is None:
-                            raise RuntimeError('No summary model is configured')
+                            raise ReportGenerationError('No summary model is configured', code='model_not_configured')
                         # The interactive document is the final summary. Do not
                         # pay for a second, parallel summary of the same meeting.
                         return None, generate_report(segments, language=job['language'], client=client)
@@ -113,7 +113,7 @@ class FinalSummaryWorker:
                     assert summarizer is not None
                     ensure = getattr(summarizer, '_ensure_client', None)
                     if ensure is not None and ensure() is None:
-                        raise RuntimeError('No summary model is configured')
+                        raise ReportGenerationError('No summary model is configured', code='model_not_configured')
                     if getattr(summarizer, 'generation_method', 'unknown') != 'llm':
                         raise RuntimeError('A model-backed summarizer is required')
                     result = summarizer.finalize_meeting(segments, language=job['language'],
@@ -136,6 +136,9 @@ class FinalSummaryWorker:
                         logger.exception('Final summary saved but report update failed')
             except asyncio.CancelledError:
                 raise
+            except ReportGenerationError as exc:
+                logger.warning('Final summary job failed code=%s location=%s', exc.code, exc.location)
+                self.storage.fail_final_summary_job(job['id'], str(exc), error_code=exc.code, error_location=exc.location)
             except Exception as exc:
                 logger.warning('Final summary job failed: %s', exc)
                 self.storage.fail_final_summary_job(job['id'], f'{type(exc).__name__}: {exc}')

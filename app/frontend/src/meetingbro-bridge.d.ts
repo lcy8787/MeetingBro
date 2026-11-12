@@ -1,5 +1,6 @@
 // Shape of the `window.meetingbro` bridge exposed by electron/preload.cjs.
 // Single source of truth so the session hook and UI components agree.
+import type { ExportMeetingInput, ExportRequestResult } from "./types";
 
 export type BackendState =
   | "idle"
@@ -47,6 +48,9 @@ export interface MeetingBroBridge {
   backendHttp: string;
   backendWs: string;
   selectExportDirectory?: (suggestedName?: string) => Promise<string | null>;
+  exportMeeting?: (meetingId: string, input: ExportMeetingInput) => Promise<ExportRequestResult>;
+  revealExport?: (id: string) => Promise<{ ok: boolean }>;
+  copyExportPath?: (id: string) => Promise<{ ok: boolean }>;
 
   getBackendInfo: () => Promise<BackendInfo>;
   onBackendStatus: (cb: (info: BackendInfo) => void) => () => void;

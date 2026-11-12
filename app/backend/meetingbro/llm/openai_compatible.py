@@ -216,15 +216,19 @@ class OpenAICompatibleClient:
             with urllib.request.urlopen(req, timeout=self._cfg.timeout_seconds) as resp:
                 raw = resp.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace").replace(self._cfg.api_key, '<redacted>')
             _LOGGER.warning(
-                "LLM HTTP error model=%s url=%s code=%s detail=%s",
+                "LLM HTTP error model=%s url=%s code=%s",
                 self._cfg.model,
                 url,
                 exc.code,
-                detail,
             )
-            raise RuntimeError(f"LLM HTTP {exc.code}: {detail}") from exc
+            code = 'model_authentication' if exc.code in {401, 403} else 'provider_error'
+            raise LLMResponseError(code, f'The summary model service returned HTTP {exc.code}.') from exc
+        except TimeoutError:
+            raise
+        except urllib.error.URLError as exc:
+            code = 'model_timeout' if isinstance(exc.reason, TimeoutError) else 'model_connection'
+            raise LLMResponseError(code, 'The summary model service could not be reached.') from exc
         finally:
             duration = time.time() - start
             _LOGGER.debug("LLM request finished model=%s duration=%.3fs", self._cfg.model, duration)

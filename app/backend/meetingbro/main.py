@@ -778,7 +778,10 @@ async def generate_meeting_report(meeting_id: str) -> ReportRevision:
             document = await app.state.inference_coordinator.run(
                 lambda: generate_report(segments, language=language, client=client))
         except ReportGenerationError as exc:
-            raise HTTPException(status_code=502, detail={'code': exc.code, 'message': str(exc)}) from exc
+            detail = {'code': exc.code, 'message': str(exc)}
+            if exc.location:
+                detail['location'] = exc.location
+            raise HTTPException(status_code=502, detail=detail) from exc
         report_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"meetingbro:report:{meeting_id}"))
         existing = await asyncio.to_thread(storage.list_report_revisions, meeting_id)
         revision = max((r.revision for r in existing if r.report_id == report_id), default=0) + 1

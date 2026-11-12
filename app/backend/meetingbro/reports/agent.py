@@ -10,30 +10,41 @@ import json
 from copy import deepcopy
 
 from ..schemas import ReportDocument
-from .components import REPORT_SCHEMA, TOOL_NAMES, list_components, planning_prompt
+from .components import TOOL_NAMES, generation_schema, list_components, planning_prompt
 from .design import compose_layout, review_design, validate_layout
 
 
 class VisualDesignAgent:
     MAX_TURNS = 5
 
-    def __init__(self, client, validate):
+    def __init__(self, client, validate, *, max_turns: int | None = None):
         self.client = client
         self.validate = validate
+        self.max_turns = self.MAX_TURNS if max_turns is None else min(self.MAX_TURNS, max_turns)
+        if self.max_turns < 1:
+            raise ValueError('Visual Design Agent needs at least one model turn')
 
     def run(self, evidence: dict, chunk, language: str) -> ReportDocument:
+        speaker_ids = sorted({item['speaker_id'] for item in evidence['transcript'] if item.get('speaker_id')})
+        schema = generation_schema(speaker_ids)
+        evidence = {**evidence, 'allowed_speaker_ids': speaker_ids}
+        if self.max_turns == 1:
+            schema['properties']['tool_request'] = {'type': 'null'}
+        system = planning_prompt(language, schema=schema)
+        if self.max_turns == 1:
+            system += '\nThis run has one completion for this transcript part. Publish the complete report now; tool_request must be null. The registry and DSL are already available above.'
         context = dict(evidence)
         candidate = None
-        for turn in range(self.MAX_TURNS):
-            raw = self.client.chat(system=planning_prompt(language), user=json.dumps(context, ensure_ascii=False),
-                                   max_tokens=7200, temperature=0.1, response_schema=REPORT_SCHEMA)
+        for turn in range(self.max_turns):
+            raw = self.client.chat(system=system, user=json.dumps(context, ensure_ascii=False),
+                                   max_tokens=7200, temperature=0.1, response_schema=schema)
             # Keep legacy fenced final responses readable, using the established validator.
-            from .generator import _payload
+            from .generator import ReportGenerationError, _payload
             payload = _payload(raw)
             request = payload.pop('tool_request', None)
             if request is None:
                 return self.validate(json.dumps(payload, ensure_ascii=False), chunk)
-            if turn == self.MAX_TURNS - 1:
+            if turn == self.max_turns - 1:
                 raise ValueError('Visual Design Agent exhausted its tool budget without publishing')
             if not isinstance(request, dict) or set(request) - {'name', 'query', 'section_index'}:
                 raise ValueError('Invalid design tool request')
@@ -72,9 +83,9 @@ class VisualDesignAgent:
                     candidate = proposed  # Commit only a fully validated tool result.
                     result = {'valid': True, 'candidate': candidate.model_dump(),
                               'findings': [finding.model_dump() for finding in findings]}
-            except (ValueError, TypeError, KeyError) as exc:
+            except (ValueError, TypeError, KeyError, ReportGenerationError) as exc:
                 result = {'valid': False, 'error': str(exc)}
             # Bound history: original evidence + latest tool result only.
             context = {**evidence, 'tool_result': {'name': name, 'result': result},
-                       'turns_remaining': self.MAX_TURNS - turn - 1}
+                       'turns_remaining': self.max_turns - turn - 1}
         raise ValueError('No visual report published')

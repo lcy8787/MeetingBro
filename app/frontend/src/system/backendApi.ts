@@ -1,6 +1,6 @@
 // Thin fetch wrappers over the backend's read-only/validation endpoints.
 
-import type { ExportMeetingResponse, FinalSummaryJob, Note, ReportRevision, SummarySnapshot, TranscriptSegment } from "../types";
+import type { ExportMeetingInput, ExportMeetingResponse, ExportRequestResult, FinalSummaryJob, Note, ReportRevision, SummarySnapshot, TranscriptSegment } from "../types";
 
 function httpBase(): string {
   return window.meetingbro?.backendHttp ?? "http://127.0.0.1:8765";
@@ -105,18 +105,62 @@ export async function retryFinalSummaryJob(id: string): Promise<FinalSummaryJob>
   return res.json();
 }
 
+const SUMMARY_ERRORS: Record<string, string> = {
+  model_not_configured: "Configure a summary model in Settings before generating a summary.",
+  model_authentication: "The summary model rejected the credentials. Check the model settings.",
+  model_connection: "Could not connect to the summary model. Check the model service and try again.",
+  provider_error: "The summary model service returned an error. Check the service and try again.",
+  model_timeout: "The summary model request timed out. Please try again or check the model service.",
+  output_truncated: "The model reached its output limit before finishing. No summary was published; automatic summaries are off.",
+  empty_response: "The model returned no final answer. No summary was published; automatic summaries are off.",
+  invalid_report_speaker: "The model used an unidentified speaker. No summary was published; please generate again.",
+  invalid_report_json: "The model returned invalid JSON. No summary was published; please generate again.",
+  invalid_report_structure: "The model returned an invalid report structure. No summary was published; please generate again.",
+  invalid_report_component_data: "The model placed data in an incompatible component. No summary was published; retry to generate again.",
+  invalid_report_sources: "The model cited missing or unknown transcript sources. No summary was published; retry to generate again.",
+  unsupported_report_claim: "The model included a quantity absent from its cited transcript. No summary was published; retry to generate again.",
+  invalid_report_evidence: "The model's evidence does not match the cited transcript. No summary was published; retry to generate again.",
+  summary_in_progress: "A summary is already being generated for this meeting.",
+  no_transcript: "This meeting has no saved transcript to summarize.",
+};
+
+export class SummaryGenerationError extends Error {
+  readonly needsSettings: boolean;
+  readonly location: string | null;
+  constructor(readonly code: string = "invalid_report", location?: unknown) {
+    super(Object.hasOwn(SUMMARY_ERRORS, code) ? SUMMARY_ERRORS[code] : "The model could not generate a valid summary. Retry to generate again; automatic summaries are off.");
+    this.name = "SummaryGenerationError";
+    this.needsSettings = ["model_not_configured", "model_authentication", "model_connection", "model_timeout", "provider_error"].includes(code);
+    // Only display schema paths; never treat an arbitrary provider/model string as a location.
+    const pathNames = new Set("parts sections blocks data nodes edges cells columns rows options source_segment_ids text title detail speaker_id evidence_quote executive_summary executive_summary_source_segment_ids id layout_type layout type label value unit series source target relation row column op block_index span emphasis children field".split(" "));
+    this.location = typeof location === "string" && location.length <= 240
+      && location.split(".").every(part => pathNames.has(part) || /^\d+$/.test(part))
+      ? location : null;
+  }
+}
+
+type Translate = (source: string, ...values: Array<string | number | undefined>) => string;
+export function summaryFailureMessage(error: SummaryGenerationError, translate: Translate): string {
+  const message = translate(error.message);
+  return error.location ? `${message} ${translate("Location: {0}", error.location)}` : message;
+}
+
 export async function generateMeetingReport(id: string): Promise<ReportRevision> {
-  const res = await fetch(`${httpBase()}/meetings/${encodeURIComponent(id)}/reports/generate`, { method: "POST" });
+  let res: Response;
+  try {
+    res = await fetch(`${httpBase()}/meetings/${encodeURIComponent(id)}/reports/generate`, { method: "POST" });
+  } catch {
+    throw new SummaryGenerationError("model_connection");
+  }
   if (!res.ok) {
-    if (res.status === 503) throw new Error("Configure a summary model in Settings before generating a summary.");
+    if (res.status === 503) throw new SummaryGenerationError("model_not_configured");
     if (res.status === 502) {
       const body = await res.json().catch(() => null);
-      if (body?.detail?.code === "output_truncated") throw new Error("The model reached its output limit before finishing. No summary was published; automatic summaries are off.");
-      if (body?.detail?.code === "empty_response") throw new Error("The model returned no final answer. No summary was published; automatic summaries are off.");
-      throw new Error("The model could not generate a valid summary. Check the model settings and try again.");
+      throw new SummaryGenerationError(typeof body?.detail?.code === "string" ? body.detail.code : undefined, body?.detail?.location);
     }
-    if (res.status === 409) throw new Error("A summary is already being generated for this meeting.");
-    throw new Error(`report generation ${res.status}`);
+    if (res.status === 409) throw new SummaryGenerationError("summary_in_progress");
+    if (res.status === 422) throw new SummaryGenerationError("no_transcript");
+    throw new SummaryGenerationError();
   }
   return res.json();
 }
@@ -128,13 +172,22 @@ export async function fetchMeetingNotes(id: string): Promise<Note[]> {
 }
 
 export async function exportMeetingById(id: string): Promise<ExportMeetingResponse> {
-  const res = await fetch(`${httpBase()}/meetings/${id}/export`, {
+  const { status, result } = await requestMeetingExport(id);
+  if (!result) throw new Error(`export ${status}`);
+  return result;
+}
+
+export async function requestMeetingExport(id: string, input: ExportMeetingInput = {}): Promise<ExportRequestResult> {
+  if (window.meetingbro?.exportMeeting) return window.meetingbro.exportMeeting(id, input);
+  const params = new URLSearchParams();
+  if (input.bilingual) params.set("bilingual", "true");
+  if (input.target_language) params.set("target_language", input.target_language);
+  const res = await fetch(`${httpBase()}/meetings/${encodeURIComponent(id)}/export${params.size ? `?${params}` : ""}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({}),
+    body: JSON.stringify(input),
   });
-  if (!res.ok) throw new Error(`export ${res.status}`);
-  return res.json();
+  return { status: res.status, result: res.ok ? await res.json() : null };
 }
 
 export async function deleteMeeting(id: string): Promise<void> {

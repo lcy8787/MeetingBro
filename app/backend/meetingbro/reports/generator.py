@@ -6,15 +6,21 @@ semantic correctness. A failed generation never becomes a transcript report.
 from __future__ import annotations
 
 import json
+import logging
+from pydantic import ValidationError
 import re
 from typing import Protocol, Sequence
 
 from ..llm.openai_compatible import LLMResponseError
-from ..schemas import LanguageCode, ReportBlock, ReportDocument, ReportSection, TranscriptSegment
+from ..schemas import DesignFinding, LanguageCode, ReportBlock, ReportDocument, ReportSection, TranscriptSegment
 from ..report_contracts import TABLE_TYPES, component_kind
 from .design import validate_layout, review_design
-from .evidence import validate_visual
+from .evidence import validate_component_fields, validate_visual
 from .agent import VisualDesignAgent
+from .errors import ReportValidationError, structure_location, validation_at
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class ChatClient(Protocol):
@@ -25,18 +31,13 @@ class ChatClient(Protocol):
 class ReportGenerationError(RuntimeError):
     """A model did not produce a complete, validated report."""
 
-    def __init__(self, message: str, *, code: str = 'invalid_report') -> None:
+    def __init__(self, message: str, *, code: str = 'invalid_report', location: str | None = None) -> None:
         super().__init__(message)
         self.code = code
+        self.location = location
 
 
-_NUMBERS = re.compile(r"(?<![A-Za-z0-9_])[-+−]?\d+(?:[.,]\d+)*(?:%|％)?(?![A-Za-z0-9_])")
-_CHINESE_NUMBERS = re.compile(
-    r"(?:[零〇一二兩两三四五六七八九十百千萬万億亿兆]{2,}(?:[點点][零〇一二兩两三四五六七八九]+)?"
-    r"|[零〇一二兩两三四五六七八九][點点][零〇一二兩两三四五六七八九]+"
-    r"|[十百千萬万億亿兆]"
-    r"|[零〇一二兩两三四五六七八九](?=個|人|台|次|年|月|日|度|克|元|吋|寸|尼特|赫茲|分鐘|秒))"
-)
+from .quantities import ARABIC_NUMBERS as _NUMBERS, CHINESE_NUMBERS as _CHINESE_NUMBERS, number_tokens
 _LANGUAGES = {"en": "English", "zh": "Traditional Chinese", "de": "German"}
 
 
@@ -71,45 +72,102 @@ def _payload(raw: str) -> dict:
 
 def _validate_text(text: str, ids: list[str], sources: dict[str, str]) -> None:
     if not ids or any(key not in sources for key in ids):
-        raise ValueError('Missing or unknown transcript sources')
+        raise ReportValidationError('Missing or unknown transcript sources', code='invalid_report_sources')
     evidence = ' '.join(sources[key] for key in ids)
-    if not set(_NUMBERS.findall(text)) <= set(_NUMBERS.findall(evidence)):
-        raise ValueError('Unsupported number')
-    if not set(_CHINESE_NUMBERS.findall(text)) <= set(_CHINESE_NUMBERS.findall(evidence)):
-        raise ValueError('Unsupported Chinese number')
+    arabic, chinese, spoken = number_tokens(text)
+    evidence_tokens = set().union(*number_tokens(evidence, source=True))
+    if ('number', 1) in evidence_tokens:
+        evidence_tokens.add(('indefinite', 1))
+    if not arabic <= evidence_tokens:
+        raise ReportValidationError('Unsupported number', code='unsupported_report_claim')
+    if not chinese <= evidence_tokens:
+        raise ReportValidationError('Unsupported Chinese number', code='unsupported_report_claim')
+    if not spoken <= evidence_tokens:
+        raise ReportValidationError('Unsupported spoken number', code='unsupported_report_claim')
 
 
-def _validated_blocks(items: list, sources: dict[str, str]) -> list[ReportBlock]:
-    if not isinstance(items, list) or not 1 <= len(items) <= 8:
-        raise ValueError('Invalid block count')
-    blocks = []
-    for item in items:
-        block = ReportBlock.model_validate(item)
-        if not block.text.strip():
-            raise ValueError('A report block has no text')
-        visible = ' '.join((block.title, block.text, block.detail, *block.columns))
+def _supported_prose_sentences(value: str, ids: list[str], sources: dict[str, str]) -> str:
+    """Omit whole unsupported sentences; never guess a replacement number or citation."""
+    pieces = re.split(r'(?<=[。！？])|(?<=[.!?])(?=\s+[A-Z])|(?<=\n)', value)
+    if len(pieces) < 2:
+        return value
+    kept = []
+    for piece in pieces:
+        if not piece.strip():
+            kept.append(piece)
+            continue
+        try:
+            _validate_text(piece, ids, sources)
+            kept.append(piece)
+        except ValueError as exc:
+            if str(exc) not in {'Unsupported number', 'Unsupported Chinese number', 'Unsupported spoken number'}:
+                raise
+    return ''.join(kept).strip()
+
+
+def _validated_block(item: dict, sources: dict[str, str], *, findings: list[DesignFinding], section_id: str, repair_prose: bool) -> ReportBlock:
+    block = ReportBlock.model_validate(item)
+    validate_component_fields(block)
+    if not block.text.strip():
+        raise ValueError('A report block has no text')
+    visible = ' '.join((block.title, block.text, block.detail, *block.columns))
+    try:
         _validate_text(visible, block.source_segment_ids, sources)
-        if component_kind(block.type) == 'statistic':
-            values = visible + ' ' + ' '.join(o.label + ' ' + o.text for o in block.options)
-            if not _NUMBERS.search(values) and not _CHINESE_NUMBERS.search(values):
-                raise ValueError('Statistic has no verifiable numeric value')
-        for option in block.options:
-            if not option.label.strip() or not option.text.strip():
-                raise ValueError('Interactive option has no label or explanation')
-            _validate_text(option.label + ' ' + option.text, option.source_segment_ids, sources)
-        if block.type in TABLE_TYPES:
-            if len(block.columns) < 2 or len(block.rows) < 2 or block.options:
-                raise ValueError('Table needs comparable columns and rows')
-            if any(not column.strip() for column in block.columns):
-                raise ValueError('Empty table heading')
-            for row in block.rows:
-                if len(row.cells) != len(block.columns) or any(not cell.strip() for cell in row.cells):
-                    raise ValueError('Invalid table row')
-                _validate_text(' '.join(row.cells), row.source_segment_ids, sources)
-        elif block.columns or block.rows:
-            raise ValueError('Only tables may contain rows or columns')
-        validate_visual(block, sources, _validate_text)
-        blocks.append(block)
+    except ValueError as exc:
+        if (not repair_prose or block.type not in {'paragraph', 'EditorialText'}
+                or str(exc) not in {'Unsupported number', 'Unsupported Chinese number', 'Unsupported spoken number'}):
+            raise
+        corrected_title = block.title
+        try:
+            _validate_text(corrected_title, block.source_segment_ids, sources)
+        except ValueError as title_error:
+            if str(title_error) not in {'Unsupported number', 'Unsupported Chinese number', 'Unsupported spoken number'}:
+                raise
+            corrected_title = ''  # Omit an unsupported heading rather than inventing a count.
+        corrected_text = _supported_prose_sentences(block.text, block.source_segment_ids, sources)
+        corrected_detail = _supported_prose_sentences(block.detail, block.source_segment_ids, sources)
+        if not corrected_text or (corrected_title, corrected_text, corrected_detail) == (block.title, block.text, block.detail):
+            raise
+        # Headings and every remaining sentence must still pass the original source checks.
+        _validate_text(' '.join((corrected_title, corrected_text, corrected_detail, *block.columns)), block.source_segment_ids, sources)
+        heading_only = corrected_title != block.title and (corrected_text, corrected_detail) == (block.text, block.detail)
+        block.title, block.text, block.detail = corrected_title, corrected_text, corrected_detail
+        findings.append(DesignFinding(section_id=section_id,
+            code='unsupported_heading_removed' if heading_only else 'unsupported_prose_removed',
+            message='Omitted prose or a heading containing a quantity absent from its cited transcript evidence.', repaired=True))
+    for option in block.options:
+        if not option.label.strip() or not option.text.strip():
+            raise ValueError('Interactive option has no label or explanation')
+        _validate_text(option.label + ' ' + option.text, option.source_segment_ids, sources)
+    if block.type in TABLE_TYPES:
+        if len(block.columns) < 2 or len(block.rows) < 2 or block.options:
+            raise ValueError('Table needs comparable columns and rows')
+        if any(not column.strip() for column in block.columns):
+            raise ValueError('Empty table heading')
+        for row in block.rows:
+            if len(row.cells) != len(block.columns) or any(not cell.strip() for cell in row.cells):
+                raise ValueError('Invalid table row')
+            _validate_text(' '.join(row.cells), row.source_segment_ids, sources)
+    elif block.columns or block.rows:
+        raise ReportValidationError('Only tables may contain rows or columns', code='invalid_report_component_data', location='columns' if block.columns else 'rows')
+    validate_visual(block, sources, _validate_text)
+    # Only change presentation after every original field and citation is validated.
+    if component_kind(block.type) == 'statistic':
+        values = ' '.join((block.title, block.text, block.detail, *(o.label + ' ' + o.text for o in block.options)))
+        if not any(number_tokens(values)):
+            block.type = 'SummaryCard' if block.options else 'EditorialText'
+            findings.append(DesignFinding(section_id=section_id, code='metric_presentation_repaired',
+                message='Displayed a sourced nonnumeric metric as ordinary text without changing its content.', repaired=True))
+    return block
+
+
+def _validated_blocks(items: list, sources: dict[str, str], *, findings: list[DesignFinding], section_id: str = "", location: str = 'blocks', repair_prose: bool = True) -> list[ReportBlock]:
+    if not isinstance(items, list) or not 1 <= len(items) <= 8:
+        raise ReportValidationError('Invalid block count', code='invalid_report_structure', location=location)
+    blocks = []
+    for index, item in enumerate(items):
+        with validation_at(f'{location}.{index}'):
+            blocks.append(_validated_block(item, sources, findings=findings, section_id=section_id, repair_prose=repair_prose))
     return blocks
 
 
@@ -121,42 +179,49 @@ def _validated_part(raw: str, chunk: list[tuple[str, str]]) -> ReportDocument:
         sources[key] = sources.get(key, '') + ' ' + text
     # Existing clients/revisions with flat blocks remain readable during migration.
     if 'sections' not in payload:
-        blocks = _validated_blocks(payload.get('blocks'), sources)
+        findings: list[DesignFinding] = []
+        blocks = _validated_blocks(payload.get('blocks'), sources, findings=findings, repair_prose=False)
         layouts = {'concept', 'step', 'timeline', 'comparison', 'argument', 'statistic', 'conclusion'}
         types = {b.type for b in blocks}
         selected = blocks[0].type if len(types) == 1 and blocks[0].type in layouts else 'text'
         layout = 'step_flow' if selected == 'step' else selected
-        return ReportDocument(sections=[ReportSection(title=blocks[0].title, layout_type=layout, blocks=blocks)])
+        return ReportDocument(sections=[ReportSection(title=blocks[0].title, layout_type=layout, blocks=blocks)], design_review=findings)
     if not isinstance(payload['sections'], list) or not 1 <= len(payload['sections']) <= 8:
         raise ValueError('Invalid section count')
     doc = ReportDocument.model_validate(payload)
     if not doc.title.strip() or len(doc.title) > 80:
         raise ValueError('Report needs a concise topic title')
-    if sum(len(section.blocks) for section in doc.sections) > 12:
-        raise ValueError('Too many report blocks in one part')
+    # Match the provider schema: up to eight sections, each with up to eight blocks.
+    # Editorial brevity is a design preference, not a reason to discard valid sourced content.
     all_ids = []
     seen = set()
-    for section, data in zip(doc.sections, payload['sections']):
+    for index, (section, data) in enumerate(zip(doc.sections, payload['sections'])):
         if not section.id.strip() or section.id in seen or not section.title.strip():
             raise ValueError('Sections need unique topic IDs and titles')
         seen.add(section.id)
-        section.blocks = _validated_blocks(data.get('blocks'), sources)
+        section.blocks = _validated_blocks(data.get('blocks'), sources, findings=doc.design_review, section_id=section.id, location=f'sections.{index}.blocks')
         ids = list(dict.fromkeys(key for block in section.blocks for key in block.source_segment_ids))
-        _validate_text(section.title, ids, sources)
+        with validation_at(f'sections.{index}.title'):
+            _validate_text(section.title, ids, sources)
         all_ids.extend(ids)
         validate_layout(section)
+        if any(f.code == 'metric_presentation_repaired' and f.section_id == section.id for f in doc.design_review):
+            section.layout = None  # Recompose for prose instead of retaining a metric-card grid.
         specialized = {'concept': 'concept', 'step_flow': 'step', 'timeline': 'timeline',
                        'comparison': 'comparison', 'argument': 'argument',
                        'statistic': 'statistic', 'conclusion': 'conclusion'}
         expected = specialized.get(section.layout_type)
-        if expected and any(block.type != expected for block in section.blocks):
-            section.layout_type = 'mixed'
+        kinds = {component_kind(block.type) for block in section.blocks}
+        if expected and kinds != {expected}:
+            section.layout_type = 'text' if kinds == {'paragraph'} else 'concept' if kinds == {'concept'} else 'mixed'
     if doc.executive_summary.strip():
-        _validate_text(doc.executive_summary, doc.executive_summary_source_segment_ids, sources)
+        with validation_at('executive_summary'):
+            _validate_text(doc.executive_summary, doc.executive_summary_source_segment_ids, sources)
     elif doc.executive_summary_source_segment_ids:
         raise ValueError('Empty summary has sources')
     if doc.title:
-        _validate_text(doc.title, all_ids, sources)
+        with validation_at('title'):
+            _validate_text(doc.title, all_ids, sources)
     return doc
 
 
@@ -221,12 +286,27 @@ def _deduplicate(doc: ReportDocument, metadata: dict[str, TranscriptSegment]) ->
 
 
 def generate_report(segments: Sequence[TranscriptSegment], *, language: LanguageCode,
-                    client: ChatClient | None = None) -> ReportDocument:
+                    client: ChatClient | None = None, max_model_calls: int | None = None) -> ReportDocument:
     chunks = _chunks(segments)
     if not chunks:
         raise ValueError('No transcript available for report generation')
     if client is None:
         raise ReportGenerationError('No summary model is configured. Only the transcript is available.')
+    remaining_calls = max_model_calls
+    if remaining_calls is not None and (type(remaining_calls) is not int or remaining_calls < len(chunks)):
+        raise ValueError('Model-call budget must cover at least one completion per transcript part')
+    original_client = client
+
+    class BudgetClient:
+        def chat(self, **kwargs):
+            nonlocal remaining_calls
+            if remaining_calls is not None:
+                if remaining_calls <= 0:
+                    raise ReportGenerationError('Model-call budget exhausted', code='report_call_budget')
+                remaining_calls -= 1
+            return original_client.chat(**kwargs)
+
+    budget_client = BudgetClient()
     result = ReportDocument(generation_method='llm')
     topics: dict[str, ReportSection] = {}
     metadata = {segment.id: segment for segment in segments}
@@ -249,11 +329,21 @@ def generate_report(segments: Sequence[TranscriptSegment], *, language: Language
                 {'id': key, 'text': text, 'speaker_id': metadata[key].speaker_id,
                  'start_time': metadata[key].start_time, 'end_time': metadata[key].end_time}
                 for key, text in chunk]}
-            part = VisualDesignAgent(client, _validated_part).run(evidence, chunk, _LANGUAGES[language])
-            for section in part.sections:
-                for block in section.blocks:
-                    if block.speaker_id and any(metadata[key].speaker_id != block.speaker_id for key in block.source_segment_ids):
-                        raise ValueError('Speaker attribution differs from cited transcript metadata')
+            def validate_candidate(raw, current_chunk):
+                part = _validated_part(raw, current_chunk)
+                for section_index, section in enumerate(part.sections):
+                    for block_index, block in enumerate(section.blocks):
+                        if block.speaker_id and any(metadata[key].speaker_id != block.speaker_id for key in block.source_segment_ids):
+                            raise ReportGenerationError(
+                                'The model assigned a speaker ID that is absent from the cited transcript metadata.',
+                                code='invalid_report_speaker',
+                                location=f'parts.{index - 1}.sections.{section_index}.blocks.{block_index}.speaker_id')
+                return part
+
+            # Reserve one completion for every later chunk before offering optional tool rounds.
+            part_budget = None if remaining_calls is None else remaining_calls - (len(chunks) - index)
+            part = VisualDesignAgent(budget_client, validate_candidate, max_turns=part_budget).run(evidence, chunk, _LANGUAGES[language])
+            result.design_review.extend(part.design_review)
             if not result.title:
                 result.title = part.title
             if part.executive_summary and part.executive_summary not in result.executive_summary:
@@ -275,14 +365,44 @@ def generate_report(segments: Sequence[TranscriptSegment], *, language: Language
             _deduplicate(result, metadata)
             topics = {section.id: section for section in result.sections}
         except LLMResponseError as exc:
+            _LOGGER.warning("Report generation failed part=%s code=%s", index, exc.code)
             raise ReportGenerationError(f'Part {index}: {exc}', code=exc.code) from exc
+        except ReportValidationError as exc:
+            location = '.'.join(filter(None, [f'parts.{index - 1}', exc.location]))
+            _LOGGER.warning('Report generation rejected code=%s location=%s', exc.code, location)
+            raise ReportGenerationError(str(exc), code=exc.code, location=location) from exc
+        except ReportGenerationError as exc:
+            _LOGGER.warning("Report generation failed part=%s code=%s", index, exc.code)
+            raise
+        except json.JSONDecodeError as exc:
+            _LOGGER.warning("Report generation rejected part=%s code=invalid_report_json line=%s column=%s", index, exc.lineno, exc.colno)
+            raise ReportGenerationError(
+                f'Part {index}: the model returned invalid report JSON. No summary was published.',
+                code='invalid_report_json') from exc
+        except ValidationError as exc:
+            locations = [structure_location(exc)]
+            _LOGGER.warning("Report generation rejected part=%s code=invalid_report_structure fields=%s", index, locations[:8])
+            raise ReportGenerationError(
+                f'Part {index}: the model returned an invalid report structure. No summary was published.',
+                code='invalid_report_structure', location=f'parts.{index - 1}.{locations[0]}') from exc
+        except TimeoutError as exc:
+            _LOGGER.warning("Report generation failed part=%s code=model_timeout", index)
+            raise ReportGenerationError(
+                f'Part {index}: the model request timed out. No summary was published.', code='model_timeout') from exc
         except Exception as exc:
+            # Do not log model content, credentials or arbitrary provider exception bodies.
+            reason = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
+            _LOGGER.warning("Report generation rejected part=%s error=%s reason=%s", index, type(exc).__name__, reason[:240])
             raise ReportGenerationError(
                 f'Part {index}: model report generation failed ({type(exc).__name__}). '
                 'Only the transcript is available; retry after checking the summary model.'
             ) from exc
     if not result.title:
         result.title = result.sections[0].title or {'zh': '會議報告', 'en': 'Meeting report', 'de': 'Besprechungsbericht'}[language]
-    result.design_review = review_design(result, repair=True)
+    result.design_review.extend(review_design(result, repair=True))
+    if any(finding.code in {'unsupported_prose_removed', 'unsupported_heading_removed'} for finding in result.design_review):
+        result.warnings.append('Some unsupported model claims were omitted. Check the linked transcript sources.')
+    if any(finding.code == 'metric_presentation_repaired' for finding in result.design_review):
+        result.warnings.append('Some metric cards were displayed as ordinary text because they contain no numeric values. Text and sources were preserved.')
     # The hero orients the reader; body blocks are no longer copied into it.
     return result

@@ -72,10 +72,10 @@ def revision(document):
 def test_registry_covers_all_requested_components_and_strict_plain_data():
     names = 'HeroSection SectionHeader EditorialText SummaryCard InsightCallout ConclusionPanel ComparisonCards ComparisonMatrix ProsCons PerspectiveCards SpecificationTable Timeline Stepper ProcessFlow CausalFlow KeyMetrics DataBars BarChart LineChart DataTable DecisionPanel ActionItems OpenQuestions SpeakerQuote TranscriptReference Accordion TabGroup ExpandableDetails KnowledgeGraph ArgumentMap DecisionTree RiskMatrix Heatmap SankeyDiagram InteractiveChart'.split()
     assert set(names) <= COMPONENTS.keys()
-    schema = REPORT_SCHEMA['properties']['sections']['items']['properties']['blocks']['items']
-    assert schema['additionalProperties'] is False
-    assert 'title' in schema['properties'] and 'title' in schema['required']
-    assert set(names) <= set(schema['properties']['type']['enum'])
+    variants = REPORT_SCHEMA['properties']['sections']['items']['properties']['blocks']['items']['anyOf']
+    assert all(schema['additionalProperties'] is False for schema in variants)
+    assert all('title' in schema['properties'] and 'title' in schema['required'] for schema in variants)
+    assert set(names) <= {name for schema in variants for name in schema['properties']['type']['enum']}
 
 
 def test_design_tools_query_compose_review_revise_then_publish():
@@ -304,3 +304,132 @@ def test_directed_graph_cannot_reverse_an_explicit_causal_quote():
     candidate = graph()
     candidate['edges'][0]['source'], candidate['edges'][0]['target'] = 'b', 'a'
     with pytest.raises(ReportGenerationError): generate(doc(candidate))
+
+
+@pytest.mark.parametrize('speaker', [None,'Alice'])
+def test_model_schema_only_allows_real_metadata_speaker_ids(speaker):
+    segments=transcript()
+    segments[0]=segments[0].model_copy(update={'speaker_id':speaker})
+    client=Client(doc())
+    generate_report(segments,language='en',client=client)
+    call=client.calls[0]
+    variants=call['response_schema']['properties']['sections']['items']['properties']['blocks']['items']['anyOf']
+    assert all(schema['properties']['speaker_id']['enum']==(['','Alice'] if speaker else ['']) for schema in variants)
+    assert json.loads(call['user'])['allowed_speaker_ids']==(['Alice'] if speaker else [])
+    assert 'metadata identifier' in call['system']
+
+
+def test_speaker_schema_is_request_local_and_never_leaks_another_meetings_ids():
+    from meetingbro.reports.components import generation_schema, REPORT_SCHEMA
+    first=generation_schema(['Alice']); second=generation_schema([])
+    def speaker(schema):
+        return schema['properties']['sections']['items']['properties']['blocks']['items']['anyOf'][0]['properties']['speaker_id']
+    assert speaker(first)['enum']==['','Alice']
+    assert speaker(second)['enum']==['']
+    assert 'enum' not in speaker(REPORT_SCHEMA)
+
+
+def test_tool_validation_catches_invalid_speaker_before_publish_and_allows_revision():
+    invalid=doc(block(speaker_id='Bob'))
+    client=Client(tool('validate_structure',invalid),doc())
+    result=generate_report(transcript(),language='en',client=client)
+    feedback=json.loads(client.calls[1]['user'])['tool_result']['result']
+    assert feedback['valid'] is False and 'speaker ID' in feedback['error']
+    assert result.sections[0].blocks[0].speaker_id==''
+
+
+def test_speaker_failures_have_a_diagnostic_code_without_weakening_validation():
+    with pytest.raises(ReportGenerationError) as failure:
+        generate(doc(block(speaker_id='Bob')))
+    assert failure.value.code=='invalid_report_speaker'
+
+
+def test_invalid_json_is_diagnosable_without_logging_transcript_content(caplog):
+    class Invalid:
+        def chat(self,**kwargs): return '{"secret meeting phrase":'
+    with pytest.raises(ReportGenerationError) as failure:
+        generate_report(transcript(),language='en',client=Invalid())
+    assert failure.value.code=='invalid_report_json'
+    assert 'invalid_report_json' in caplog.text
+    assert 'secret meeting phrase' not in caplog.text
+
+
+def test_structure_failures_log_field_locations_instead_of_model_content(caplog):
+    payload=doc(block(type='not-a-real-component'))
+    payload['sections'][0]['blocks'][0]['text']='private transcript phrase'
+    with pytest.raises(ReportGenerationError) as failure: generate(payload)
+    assert failure.value.code=='invalid_report_structure'
+    assert 'sections.0.blocks.0.type' in caplog.text
+    assert 'private transcript phrase' not in caplog.text
+
+
+def test_long_reports_accept_more_than_twelve_blocks_within_the_published_schema():
+    segments=transcript()
+    segments[0]=segments[0].model_copy(update={'text':' '.join(f'Observation {i}.' for i in range(16))})
+    payload=doc()
+    payload['sections']=[dict(id=topic,title=topic,layout_type='text',blocks=[block(text=f'Observation {i}.') for i in range(start,start+8)]) for topic,start in [('Overview',0),('Discussion',8)]]
+    result=generate_report(segments,language='en',client=Client(payload))
+    assert sum(len(section.blocks) for section in result.sections)==16
+    assert all(section.layout for section in result.sections)
+
+
+def test_accepting_longer_reports_does_not_bypass_per_block_provenance_or_section_bounds():
+    segments=transcript()
+    segments[0]=segments[0].model_copy(update={'text':' '.join(f'Observation {i}.' for i in range(16))})
+    payload=doc()
+    payload['sections']=[dict(id=topic,title=topic,layout_type='text',blocks=[block(text=f'Observation {i}.') for i in range(start,start+8)]) for topic,start in [('Overview',0),('Discussion',8)]]
+    missing=copy.deepcopy(payload);missing['sections'][1]['blocks'][5]['source_segment_ids']=[]
+    over=copy.deepcopy(payload);over['sections'][0]['blocks'].append(block(text='Observation 0.'))
+    for invalid in [missing,over]:
+        with pytest.raises(ReportGenerationError):
+            generate_report(segments,language='en',client=Client(invalid))
+
+
+def test_three_call_budget_reserves_a_completion_for_each_transcript_part():
+    segments=[transcript()[0].model_copy(update={'id':key,'text':'Plan. '+('x'*7985)}) for key in ['a','b','c']]
+    def part(key):
+        payload=doc(block(source_segment_ids=[key]))
+        payload['sections'][0]['id']=key
+        payload['sections'][0]['title']=key
+        return payload
+    client=Client(*(part(key) for key in ['a','b','c']))
+    result=generate_report(segments,language='en',client=client,max_model_calls=3)
+    assert len(client.calls)==3 and result.sections
+    assert all(call['response_schema']['properties']['tool_request']=={'type':'null'} for call in client.calls)
+
+
+def test_insufficient_generation_budget_fails_before_any_model_call():
+    segments=[transcript()[0].model_copy(update={'text':'Plan. '+('x'*17000)})]
+    client=Client(doc())
+    with pytest.raises(ValueError,match='budget'):
+        generate_report(segments,language='en',client=client,max_model_calls=2)
+    assert client.calls==[]
+
+
+def test_only_unsupported_prose_sentences_are_omitted_with_visible_audit_notice():
+    segments=transcript()
+    segments[0]=segments[0].model_copy(update={'text':'The release supports device 11. It uses an improved scheduler.'})
+    payload=doc(block(text='排程器已改善，支援裝置 11。它也支援版本 26。'))
+    result=generate_report(segments,language='zh',client=Client(payload))
+    assert result.sections[0].blocks[0].text=='排程器已改善，支援裝置 11。'
+    assert any(f.code=='unsupported_prose_removed' and f.repaired for f in result.design_review)
+    assert result.warnings
+
+
+def test_prose_repair_never_fabricates_replacements_or_silently_accepts_an_invalid_block():
+    segments=transcript()
+    segments[0]=segments[0].model_copy(update={'text':'Device 11 uses an improved scheduler.'})
+    for candidate in [block(text='裝置 26。'),block('BarChart',text='裝置 11。裝置 26。'),block(text='裝置 11。裝置 26。',source_segment_ids=['missing'])]:
+        with pytest.raises(ReportGenerationError):
+            generate_report(segments,language='zh',client=Client(doc(candidate)))
+
+
+def test_an_unsupported_count_in_a_prose_heading_is_omitted_without_losing_the_body():
+    segments=transcript()
+    segments[0]=segments[0].model_copy(update={'text':'Parents care about content, communication, and guidance.'})
+    payload=doc(block(title='三個家長關切',text='家長關心內容、溝通與引導。'))
+    report=generate_report(segments,language='zh',client=Client(payload))
+    assert report.sections[0].blocks[0].title==''
+    assert report.sections[0].blocks[0].text=='家長關心內容、溝通與引導。'
+    assert report.design_review[0].code=='unsupported_heading_removed'
+    assert report.warnings

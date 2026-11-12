@@ -26,5 +26,17 @@ GRAPH_TYPES = {'KnowledgeGraph', 'ArgumentMap', 'DecisionTree', 'CausalFlow', 'S
 MATRIX_TYPES = {'RiskMatrix', 'Heatmap'}
 
 
+def component_payload_fields(name: str) -> set[str]:
+    if name in CHART_TYPES:
+        return {'data'}
+    if name in GRAPH_TYPES:
+        return {'nodes', 'edges'}
+    if name in MATRIX_TYPES:
+        return {'cells'}
+    if name in TABLE_TYPES:
+        return {'columns', 'rows'}
+    return {'options'}
+
+
 def component_kind(name: str) -> str:
     return ALIASES.get(name, name)

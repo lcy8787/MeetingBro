@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { generateMeetingReport } from "../system/backendApi";
+import { generateMeetingReport, SummaryGenerationError } from "../system/backendApi";
 import type { ReportRevision, TranscriptSegment } from "../types";
 
 export const FIRST_SUMMARY_INTERVAL_MS = 5 * 60_000;
@@ -10,7 +10,8 @@ export function useSummaryGeneration(meetingId: string | null, running: boolean,
   // paid requests because of an old preference.
   const [automatic, setAutomatic] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<SummaryGenerationError | null>(null);
+  const [errorMeetingId, setErrorMeetingId] = useState<string | null>(null);
   const [reports, setReports] = useState<Record<string, ReportRevision>>({});
   const generated = meetingId ? reports[meetingId] ?? null : null;
   const known = existingReport?.meeting_id === meetingId && existingReport.document.generation_method === "llm" ? existingReport : null;
@@ -28,7 +29,8 @@ export function useSummaryGeneration(meetingId: string | null, running: boolean,
     inFlight.current = true;
     const source = latest.current;
     setBusy(true);
-    setError("");
+    setError(null);
+    setErrorMeetingId(id);
     try {
       const report = await generateMeetingReport(id);
       if (report.meeting_id !== id || report.document.generation_method !== "llm") throw new Error("The model did not produce a summary.");
@@ -36,7 +38,7 @@ export function useSummaryGeneration(meetingId: string | null, running: boolean,
       if (source.meetingId === id) processed.current.set(id, source.fingerprint);
       return report;
     } catch (reason) {
-      setError((reason as Error).message);
+      setError(reason instanceof SummaryGenerationError ? reason : new SummaryGenerationError());
       // A failed paid request needs an explicit retry. Do not keep charging
       // for retries while the model is unavailable or returns invalid data.
       setAutomatic(false);
@@ -58,5 +60,5 @@ export function useSummaryGeneration(meetingId: string | null, running: boolean,
     return () => window.clearInterval(timer);
   }, [automatic, running, meetingId, interval, lastGeneratedAt, generate]);
 
-  return { automatic, setAutomatic, busy, error, reports, generated, generate, interval };
+  return { automatic, setAutomatic, busy, error, errorMeetingId, reports, generated, generate, interval };
 }

@@ -2,7 +2,8 @@
 from decimal import Decimal, InvalidOperation
 import re
 
-from ..report_contracts import CHART_TYPES, GRAPH_TYPES, MATRIX_TYPES, component_kind
+from ..report_contracts import CHART_TYPES, GRAPH_TYPES, MATRIX_TYPES, component_kind, component_payload_fields
+from .errors import ReportValidationError
 
 
 def numeric(value: str) -> Decimal:
@@ -20,14 +21,14 @@ def numeric(value: str) -> Decimal:
 
 def exact_quote(quote, ids, sources):
     if not quote.strip() or not ids or any(key not in sources for key in ids):
-        raise ValueError('Missing exact transcript evidence')
+        raise ReportValidationError('Missing exact transcript evidence', code='invalid_report_evidence')
     if not any(quote in sources[key] for key in ids):
-        raise ValueError('Evidence quote must occur verbatim in a cited segment')
+        raise ReportValidationError('Evidence quote must occur verbatim in a cited segment', code='invalid_report_evidence')
 
 
 def literal(term, quote):
     if term and term not in quote:
-        raise ValueError('Visual category or unit absent from exact evidence')
+        raise ReportValidationError('Visual category or unit absent from exact evidence', code='invalid_report_evidence')
 
 
 def value_in_quote(value, unit, quote):
@@ -36,11 +37,20 @@ def value_in_quote(value, unit, quote):
                 unit and re.search(re.escape(unit) + r'\s*' + number, quote))
 
 
+def validate_component_fields(block):
+    allowed = component_payload_fields(block.type)
+    for field in ('options', 'columns', 'rows', 'data', 'nodes', 'edges', 'cells'):
+        if getattr(block, field) and field not in allowed:
+            raise ReportValidationError('This component contains an incompatible data field.',
+                code='invalid_report_component_data', location=field)
+
+
 def validate_visual(block, sources, validate_text):
+    validate_component_fields(block)
     def sourced(item, text):
         validate_text(text, item.source_segment_ids, sources)
         if not set(item.source_segment_ids) <= set(block.source_segment_ids):
-            raise ValueError('Visual item sources must be included in parent block sources')
+            raise ReportValidationError('Visual item sources must be included in parent block sources', code='invalid_report_sources')
 
     if block.evidence_quote:
         exact_quote(block.evidence_quote, block.source_segment_ids, sources)
@@ -67,13 +77,13 @@ def validate_visual(block, sources, validate_text):
             for term in [datum.label, datum.series, datum.unit]:
                 literal(term, datum.evidence_quote)
             if not datum.label.strip() or not value_in_quote(datum.value, datum.unit, datum.evidence_quote):
-                raise ValueError('Value/unit pair is absent from the quoted observation')
+                raise ReportValidationError('Value/unit pair is absent from the quoted observation', code='invalid_report_evidence')
             # A chart point must not borrow another observation's value from a large quoted passage.
             # Numbers within literal category labels (e.g. a year) remain legitimate context.
             tokens = lambda text: set(re.findall(r'(?<![A-Za-z0-9_])[-+]?\d+(?:\.\d+)?', text))
             allowed = tokens(' '.join([datum.label, datum.series, datum.unit, datum.value]))
             if not tokens(datum.evidence_quote) <= allowed:
-                raise ValueError('Quote contains multiple numeric observations; quote only this data point')
+                raise ReportValidationError('Quote contains multiple numeric observations; quote only this data point', code='invalid_report_evidence')
             by_series.setdefault(datum.series, []).append(datum)
         if block.type == 'LineChart':
             exact_quote(block.evidence_quote, block.source_segment_ids, sources)
@@ -82,7 +92,7 @@ def validate_visual(block, sources, validate_text):
                     raise ValueError('Line chart needs three ordered observations per series')
                 positions = [block.evidence_quote.find(d.label) for d in values]
                 if any(p < 0 for p in positions) or positions != sorted(set(positions)):
-                    raise ValueError('Line observations must follow the quoted sequence')
+                    raise ReportValidationError('Line observations must follow the quoted sequence', code='invalid_report_evidence')
     elif block.data:
         raise ValueError('Only numeric chart components may contain data')
 
@@ -95,7 +105,7 @@ def validate_visual(block, sources, validate_text):
                 raise ValueError('Empty graph node')
             sourced(node, node.label + ' ' + node.text)
             if not any(node.label in sources[key] for key in node.source_segment_ids):
-                raise ValueError('Graph labels must be transcript terms')
+                raise ReportValidationError('Graph labels must be transcript terms', code='invalid_report_evidence')
         seen = set()
         parents = {}
         for edge in block.edges:
@@ -114,7 +124,7 @@ def validate_visual(block, sources, validate_text):
                 right = edge.evidence_quote.find(nodes[edge.target].label)
                 reverse = edge.relation == 'causes' and edge.label.casefold() in {'because', 'because of', 'wegen', '因為', '因为', '由於', '由于', '源於', '源于'}
                 if (left < right) == reverse:
-                    raise ValueError('Directed endpoints contradict the quoted relationship order')
+                    raise ReportValidationError('Directed endpoints contradict the quoted relationship order', code='invalid_report_evidence')
             allowed = {'CausalFlow': {'causes'}, 'ArgumentMap': {'supports', 'opposes'},
                        'DecisionTree': {'branch'}, 'SankeyDiagram': {'flow'}}.get(block.type)
             if allowed and edge.relation not in allowed:
@@ -123,7 +133,7 @@ def validate_visual(block, sources, validate_text):
                 if numeric(edge.value) <= 0 or not edge.unit:
                     raise ValueError('Sankey flow needs positive value and explicit unit')
                 if not value_in_quote(edge.value, edge.unit, edge.evidence_quote):
-                    raise ValueError('Sankey value/unit pair absent from evidence')
+                    raise ReportValidationError('Sankey value/unit pair absent from evidence', code='invalid_report_evidence')
             elif edge.value or edge.unit:
                 raise ValueError('Only Sankey edges may encode weights')
             parents.setdefault(edge.target, []).append(edge.source)

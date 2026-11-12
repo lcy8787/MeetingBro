@@ -142,6 +142,10 @@ class Storage:
             if not self._conn.execute("SELECT 1 FROM meetingbro_migrations WHERE version = 4").fetchone():
                 self._conn.execute("ALTER TABLE summary_snapshots ADD COLUMN generation_method TEXT NOT NULL DEFAULT 'unknown'")
                 self._conn.execute("INSERT INTO meetingbro_migrations(version) VALUES (4)")
+            if not self._conn.execute("SELECT 1 FROM meetingbro_migrations WHERE version = 5").fetchone():
+                self._conn.execute("ALTER TABLE final_summary_jobs ADD COLUMN error_code TEXT")
+                self._conn.execute("ALTER TABLE final_summary_jobs ADD COLUMN error_location TEXT")
+                self._conn.execute("INSERT INTO meetingbro_migrations(version) VALUES (5)")
             self._conn.commit()
         except Exception:
             self._conn.rollback()
@@ -200,7 +204,7 @@ class Storage:
                     (id, meeting_id, status, language, vocabulary, created_at, updated_at)
                     VALUES (?, ?, 'queued', ?, ?, ?, ?)
                     ON CONFLICT(meeting_id) DO UPDATE SET status='queued', language=excluded.language,
-                        vocabulary=excluded.vocabulary, error=NULL, updated_at=excluded.updated_at
+                        vocabulary=excluded.vocabulary, error=NULL, error_code=NULL, error_location=NULL, updated_at=excluded.updated_at
                     WHERE final_summary_jobs.status IN ('failed', 'succeeded')""",
                     (job_id, meeting_id, language, vocabulary, now, now))
                 self._conn.commit()
@@ -213,8 +217,8 @@ class Storage:
 
     def get_final_summary_job(self, meeting_id: str) -> Optional[dict]:
         with self._lock:
-            row = self._conn.execute("SELECT id, meeting_id, status, language, vocabulary, attempts, error, created_at, updated_at FROM final_summary_jobs WHERE meeting_id = ?", (meeting_id,)).fetchone()
-        return dict(zip(('id', 'meeting_id', 'status', 'language', 'vocabulary', 'attempts', 'error', 'created_at', 'updated_at'), row)) if row else None
+            row = self._conn.execute("SELECT id, meeting_id, status, language, vocabulary, attempts, error, created_at, updated_at, error_code, error_location FROM final_summary_jobs WHERE meeting_id = ?", (meeting_id,)).fetchone()
+        return dict(zip(('id', 'meeting_id', 'status', 'language', 'vocabulary', 'attempts', 'error', 'created_at', 'updated_at', 'error_code', 'error_location'), row)) if row else None
 
     def record_incomplete_audio_job(self, job_id: str, meeting_id: str, language: str, vocabulary: str | None) -> None:
         now = _iso(_utc_now())
@@ -235,7 +239,7 @@ class Storage:
         """Require an explicit retry for old jobs when opening the summary UI."""
         with self._lock:
             self._conn.execute(
-                "UPDATE final_summary_jobs SET status='failed', error=?, updated_at=? WHERE status IN ('queued', 'running')",
+                "UPDATE final_summary_jobs SET status='failed', error=?, error_code=NULL, error_location=NULL, updated_at=? WHERE status IN ('queued', 'running')",
                 ('Automatic summary is off. Generate a summary or explicitly retry this job.', _iso(_utc_now())))
             self._conn.commit()
 
@@ -256,9 +260,9 @@ class Storage:
         with self._lock:
             return self._conn.execute("SELECT 1 FROM final_summary_jobs WHERE status='queued' LIMIT 1").fetchone() is not None
 
-    def fail_final_summary_job(self, job_id: str, error: str) -> None:
+    def fail_final_summary_job(self, job_id: str, error: str, *, error_code: str | None = None, error_location: str | None = None) -> None:
         with self._lock:
-            self._conn.execute("UPDATE final_summary_jobs SET status='failed', error=?, updated_at=? WHERE id=? AND status='running'", (error[:500], _iso(_utc_now()), job_id))
+            self._conn.execute("UPDATE final_summary_jobs SET status='failed', error=?, error_code=?, error_location=?, updated_at=? WHERE id=? AND status='running'", (error[:500], error_code, error_location, _iso(_utc_now()), job_id))
             self._conn.commit()
 
     def complete_final_summary_job(self, job_id: str, snapshots: list[SummarySnapshot], report: ReportRevision | None = None) -> bool:
@@ -293,7 +297,7 @@ class Storage:
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (snap.id, snap.meeting_id, snap.summary_type, snap.time_start, snap.time_end, snap.language, snap.content,
                          json.dumps(snap.source_segment_ids), 1, json.dumps(snap.translations), _iso(snap.created_at), snap.generation_method))
-                self._conn.execute("UPDATE final_summary_jobs SET status='succeeded', error=NULL, updated_at=? WHERE id=?", (_iso(_utc_now()), job_id))
+                self._conn.execute("UPDATE final_summary_jobs SET status='succeeded', error=NULL, error_code=NULL, error_location=NULL, updated_at=? WHERE id=?", (_iso(_utc_now()), job_id))
                 self._conn.commit()
                 return True
             except Exception:

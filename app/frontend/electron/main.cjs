@@ -1,14 +1,16 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, shell, screen } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell, screen, clipboard } = require("electron");
 const path = require("node:path");
 
 const { BackendSupervisor } = require("./backend.cjs");
 const settingsStore = require("./settings-store.cjs");
+const { registerExportIpc } = require("./export-ipc.cjs");
 
 const isDev = !app.isPackaged;
 
 let mainWindow = null;
 let supervisor = null;
 let sessionActive = false; // renderer reports this so we don't restart mid-recording
+let exportActions = null;
 
 function broadcastBackendStatus(info) {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -45,6 +47,10 @@ function createWindow() {
   win.setMenu(null);
   win.setMenuBarVisibility(false);
   mainWindow = win;
+  win.on("closed", () => exportActions?.clear());
+  win.webContents.on("did-start-navigation", (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) exportActions?.clear();
+  });
 
   if (isDev) {
     win.loadURL("http://localhost:5173");
@@ -57,6 +63,8 @@ app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
 
   supervisor = new BackendSupervisor({ onStatus: broadcastBackendStatus });
+  exportActions = registerExportIpc({ ipcMain, shell, clipboard, getWindow: () => mainWindow,
+    getBackendBase: () => supervisor.httpBase(), isDev });
 
   // Synchronous so preload can expose the configured backend URLs at load time.
   ipcMain.on("meetingbro:get-backend-bases", (event) => {

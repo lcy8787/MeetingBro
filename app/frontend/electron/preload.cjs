@@ -15,6 +15,9 @@ contextBridge.exposeInMainWorld("meetingbro", {
   backendHttp: bases.httpBase,
   backendWs: bases.wsBase,
   selectExportDirectory: (suggestedName) => ipcRenderer.invoke("meetingbro:select-export-directory", suggestedName),
+  exportMeeting: (meetingId, input) => ipcRenderer.invoke("meetingbro:export-meeting", meetingId, input),
+  revealExport: (id) => ipcRenderer.invoke("meetingbro:reveal-export", id),
+  copyExportPath: (id) => ipcRenderer.invoke("meetingbro:copy-export-path", id),
 
   // Backend lifecycle / status
   getBackendInfo: () => ipcRenderer.invoke("meetingbro:get-backend-info"),

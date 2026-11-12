@@ -9,6 +9,7 @@ import { BackendGate } from "./components/BackendGate";
 import { SettingsModal } from "./components/SettingsModal";
 import { InputLevelPreview } from "./components/AudioLevelMeter";
 import { RecorderView } from "./components/RecorderView";
+import type { NoticeFeedback } from "./components/RecorderNotice";
 import "./meetingWorkspace.css";
 import { fetchAudioDevices } from "./system/backendApi";
 import type { AudioDevices } from "./system/backendApi";
@@ -212,8 +213,8 @@ export default function App() {
   const [exportRoot, setExportRoot] = useState<string>("");
   const [exporting, setExporting] = useState(false);
   const [exportIntent, setExportIntent] = useState<"manual" | "restart" | null>(null);
-  const [actionFeedback, setActionFeedback] = useState<string | null>(null);
-  const [bookmarkFeedback, setBookmarkFeedback] = useState<string | null>(null);
+  const [actionFeedback, setActionFeedback] = useState<NoticeFeedback | null>(null);
+  const [bookmarkFeedback, setBookmarkFeedback] = useState<NoticeFeedback | null>(null);
   const [bilingualExport, setBilingualExport] = useState(false);
   const [restartPromptOpen, setRestartPromptOpen] = useState(false);
   const [diagnosticsMode, setDiagnosticsMode] = useState<"simple" | "advanced">(
@@ -806,16 +807,16 @@ export default function App() {
 
   const handleExportMeeting = async () => {
     setExportIntent("manual");
-    setActionFeedback(null);
+    setActionFeedback({ text: t("Exporting…"), type: "info" });
     setExporting(true);
     try {
       const result = await exportMeeting(currentExportInput());
       if (result) {
         setLastExport(result);
-        setActionFeedback(`Export ready in ${result.export_dir}`);
-      }
+        setActionFeedback({ text: t("Export ready in {0}", result.export_dir), type: "success", exported: result });
+      } else setActionFeedback(null);
     } catch (error) {
-      setActionFeedback(t("Export failed: {0}", (error as Error).message));
+      setActionFeedback({ text: t("Export failed: {0}", (error as Error).message), type: "error" });
     } finally {
       setExporting(false);
       setExportIntent(null);
@@ -843,7 +844,7 @@ export default function App() {
   const handleSaveVocabulary = () => {
     window.localStorage.setItem(VOCABULARY_STORAGE_KEY, vocabulary);
     applyVocabulary(vocabulary);
-    setActionFeedback(t("Terms saved"));
+    setActionFeedback({ text: t("Terms saved"), type: "success" });
   };
 
   const handleStartSession = () => {
@@ -876,19 +877,20 @@ export default function App() {
 
   const handleSaveAndRestart = async () => {
     setExportIntent("restart");
-    setActionFeedback(null);
+    setActionFeedback({ text: t("Exporting…"), type: "info" });
     setExporting(true);
     try {
       const result = await exportMeeting(currentExportInput());
       if (!result) {
+        setActionFeedback(null);
         return;
       }
       setLastExport(result);
-      setActionFeedback(`Saved to ${result.export_dir}. Starting a new meeting…`);
+      setActionFeedback({ text: t("Saved to {0}. Starting a new meeting…", result.export_dir), type: "success", exported: result });
       setRestartPromptOpen(false);
       setSessionEnabled(true);
     } catch (error) {
-      setActionFeedback(t("Export failed: {0}", (error as Error).message));
+      setActionFeedback({ text: t("Export failed: {0}", (error as Error).message), type: "error" });
     } finally {
       setExporting(false);
       setExportIntent(null);
@@ -900,11 +902,12 @@ export default function App() {
     if (!connected || state !== "running") return;
     setBookmarkLabel("");
     await saveBookmark(label);
-    setBookmarkFeedback(
-      label.trim()
+    setBookmarkFeedback({
+      type: "success",
+      text: label.trim()
         ? `Bookmark saved at ${formatElapsedSeconds(audioClockSeconds ?? elapsedSeconds)} · ${label.trim()}`
         : `Bookmark saved at ${formatElapsedSeconds(audioClockSeconds ?? elapsedSeconds)}`,
-    );
+    });
   };
 
   const vocabularyHint = sessionEnabled
@@ -1295,7 +1298,7 @@ export default function App() {
                 {committedLagSeconds != null ? ` · commit ${formatLagSeconds(committedLagSeconds)}` : ""}
                 {previewSegment ? t(" · previewing") : ""}
               </p>
-              {bookmarkFeedback && <p className="bookmark-feedback">{t(bookmarkFeedback)}</p>}
+              {bookmarkFeedback && <p className="bookmark-feedback">{t(bookmarkFeedback.text)}</p>}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <div className="range">{segments.length} {" "}{t("segments")}</div>
@@ -1481,7 +1484,7 @@ export default function App() {
             </div>
             {(exporting || actionFeedback) && (
               <p className={`confirm-status ${exporting ? "is-busy" : "is-success"}`}>
-                {exporting ? t("Saving the current meeting export before opening a new session…") : (actionFeedback ? t(actionFeedback) : null)}
+                {exporting ? t("Saving the current meeting export before opening a new session…") : (actionFeedback ? t(actionFeedback.text) : null)}
               </p>
             )}
           </div>

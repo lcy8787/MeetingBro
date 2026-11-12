@@ -23,7 +23,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y portaudio19-dev
 
       - name: Install backend
-        run: pip install -e "app/backend"
+        run: pip install -e "app/backend[dev]"
 
       - name: Verify meetingbro import
         run: python -c "import meetingbro; print('meetingbro import ok')"
@@ -39,7 +39,6 @@ jobs:
       - name: Run tests (if any exist)
         run: |
           if find tests/ -name "*.py" | grep -q .; then
-            pip install pytest
             pytest tests/
           else
             echo "No tests found in tests/, skipping pytest"

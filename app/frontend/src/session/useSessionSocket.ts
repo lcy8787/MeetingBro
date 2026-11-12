@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { ExportMeetingInput } from "../types";
+export type { ExportMeetingInput } from "../types";
 import type {
   Note,
   FinalSummaryJob,
@@ -11,7 +13,7 @@ import type {
   SummaryType,
   TranscriptSegment,
 } from "../types";
-import { fetchFinalSummaryJob, fetchMeetingReports, fetchMeetingSummaries, fetchMeetingTranscript } from "../system/backendApi";
+import { fetchFinalSummaryJob, fetchMeetingReports, fetchMeetingSummaries, fetchMeetingTranscript, requestMeetingExport } from "../system/backendApi";
 
 const DEFAULT_WS = "ws://127.0.0.1:8765/ws/session";
 const VOCABULARY_STORAGE_KEY = "meetingbro.vocabulary";
@@ -66,17 +68,6 @@ export interface SaveNoteInput {
   content: string;
   source_type?: string;
   source_id?: string;
-}
-
-export interface ExportMeetingInput {
-  source?: string;
-  runtime_profile?: string;
-  summary_language?: string;
-  subtitle_language?: string;
-  export_root?: string;
-  export_dir?: string;
-  bilingual?: boolean;
-  target_language?: "zh" | "en" | "de";
 }
 
 export interface SessionOptions {
@@ -771,26 +762,13 @@ export function useSessionSocket(options: SessionOptions = {}): SessionView {
         setLastError("cannot export meeting — session not ready");
         return null;
       }
-      const base = window.meetingbro?.backendHttp ?? "http://127.0.0.1:8765";
-      const params = new URLSearchParams();
-      if (input.bilingual) {
-        params.set("bilingual", "true");
-      }
-      if (input.target_language) {
-        params.set("target_language", input.target_language);
-      }
-      const url = `${base}/meetings/${meetingId}/export${params.size ? `?${params.toString()}` : ""}`;
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(input),
-      });
-      if (!response.ok) {
+      const response = await requestMeetingExport(meetingId, input);
+      if (!response.result) {
         const message = `export failed (${response.status})`;
         setLastError(message);
         return null;
       }
-      return await response.json() as ExportMeetingResponse;
+      return response.result;
     },
     [meetingId],
   );

@@ -156,13 +156,48 @@
 .mb-translation { color: var(--subtle); font-size: .9em; margin: 5px 0 0; }
 .mb-status, .mb-job { font-size: 14px; color: var(--subtle); line-height: 1.6; }
 .mb-notice {
-  position: fixed; top: 68px; right: 22px; z-index: 80; max-width: min(400px, calc(100vw - 32px));
-  display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 11px;
-  border: 1px solid #4a6152; background: #27362d; color: var(--ink); box-shadow: 0 8px 24px #0005;
+  --notice-accent: #1677ff; --notice-bg: #e6f4ff; --notice-border: #91caff;
+  --notice-motion: cubic-bezier(0.78, 0.14, 0.15, 0.86);
+  position: fixed; top: 68px; right: 22px; z-index: 80;
+  box-sizing: border-box; width: 400px; max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 84px); overflow-y: auto; color-scheme: light;
+  display: flex; align-items: flex-start; gap: 12px; padding: 14px 16px; border-radius: 12px;
+  border: 1px solid var(--notice-border); background: var(--notice-bg); color: rgba(0, 0, 0, .88);
+  box-shadow: 0 8px 24px #0003;
+  animation: mb-notice-enter 300ms var(--notice-motion) both;
 }
-.mb-notice span { overflow-wrap: anywhere; font-size: 14px; line-height: 1.5; }
-.mb-notice button { border: 0; background: transparent; color: var(--green); white-space: nowrap; }
-.mb-notice .mb-close { font-size: 20px; color: var(--subtle); }
+.mb-notice--success { --notice-accent: #52c41a; --notice-bg: #f6ffed; --notice-border: #b7eb8f; }
+.mb-notice--warning { --notice-accent: #faad14; --notice-bg: #fffbe6; --notice-border: #ffe58f; }
+.mb-notice--error { --notice-accent: #ff4d4f; --notice-bg: #fff2f0; --notice-border: #ffccc7; }
+.mb-notice__icon { flex: none; width: 20px; height: 20px; margin-top: 1px; color: var(--notice-accent); }
+.mb-notice__body { flex: 1; min-width: 0; }
+.mb-notice__text { display: block; overflow-wrap: anywhere; white-space: pre-wrap; font-size: 14px; line-height: 1.5714285714; }
+.mb-notice button { border: 0; background: transparent; box-shadow: none; }
+.mb-notice .mb-notice__action {
+  display: block; margin-top: 8px; padding: 0; min-height: 24px;
+  color: rgba(0, 0, 0, .88); text-decoration: underline; text-underline-offset: 3px; font-size: 14px; line-height: 1.5714285714;
+}
+.export-location-actions { display: flex; flex-wrap: wrap; gap: 0 16px; }
+.export-location-actions__status { flex-basis: 100%; margin-top: 8px; font-size: 12px; overflow-wrap: anywhere; }
+.mb-notice .mb-notice__action:disabled { opacity: .55; cursor: default; }
+.mb-notice .mb-close {
+  display: grid; place-items: center; flex: none; width: 24px; height: 24px; padding: 4px;
+  margin: -1px -4px 0 0; border-radius: 6px; color: rgba(0, 0, 0, .45);
+}
+.mb-notice .mb-close svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
+.app .mb-notice .mb-close:hover { color: rgba(0, 0, 0, .88); background: #0000000a; }
+.app .mb-notice button:focus-visible { outline: 2px solid var(--notice-accent); outline-offset: 3px; }
+.mb-notice--leaving { pointer-events: none; animation: mb-notice-leave 200ms var(--notice-motion) both; }
+@keyframes mb-notice-enter {
+  from { opacity: 0; transform: translateX(24px) scale(.98); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+@keyframes mb-notice-leave {
+  from { opacity: 1; transform: translateX(0); }
+  to { opacity: 0; transform: translateX(16px); }
+}
+@media (prefers-reduced-motion: reduce) { .mb-notice { animation: none; } .mb-notice--leaving { opacity: 0; } }
+@media (max-width: 780px) { .mb-notice { right: 16px; } }
 .recorder-shell .report-view {
   --report-accent: var(--green); --report-bg: var(--canvas); --report-surface: var(--sheet);
   --report-raised: #25332a; --report-border: #344339; --report-text: var(--ink); --report-muted: var(--subtle);

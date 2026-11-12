@@ -1,5 +1,5 @@
 <div align="right">
-  English | <a href="README.zh-CN.md">简体中文</a>
+  English | <a href="README.zh-tw.md">繁體中文</a>
 </div>
 
 # MeetingBro

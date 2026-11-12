@@ -1,6 +1,36 @@
 import json
+import io
+import urllib.error
 import pytest
 from meetingbro.llm.openai_compatible import OpenAICompatibleClient, OpenAICompatibleConfig, LLMResponseError, _openrouter_reasoning
+
+
+@pytest.mark.parametrize('status,code', [(401, 'model_authentication'), (403, 'model_authentication'), (429, 'provider_error'), (503, 'provider_error')])
+def test_http_errors_are_classified_without_exposing_provider_content(monkeypatch, caplog, status, code):
+    calls = []
+    def request(req, timeout):
+        calls.append(req)
+        raise urllib.error.HTTPError(req.full_url, status, 'private provider message', {}, io.BytesIO(b'private model response'))
+    monkeypatch.setattr('urllib.request.urlopen', request)
+    client = OpenAICompatibleClient(OpenAICompatibleConfig('private-api-key', 'https://example.com/v1', 'model'))
+    with pytest.raises(LLMResponseError) as failure:
+        client.chat(system='summary', user='private transcript', max_tokens=100)
+    assert failure.value.code == code and len(calls) == 1
+    assert 'private' not in str(failure.value) and 'private' not in caplog.text
+
+
+@pytest.mark.parametrize('reason,code', [(OSError('private network information'), 'model_connection'), (TimeoutError('private timeout'), 'model_timeout')])
+def test_connection_errors_are_classified_without_retries(monkeypatch, reason, code):
+    calls = []
+    def request(req, timeout):
+        calls.append(req)
+        raise urllib.error.URLError(reason)
+    monkeypatch.setattr('urllib.request.urlopen', request)
+    client = OpenAICompatibleClient(OpenAICompatibleConfig('test-key', 'https://example.com/v1', 'model'))
+    with pytest.raises(LLMResponseError) as failure:
+        client.chat(system='summary', user='private transcript', max_tokens=100)
+    assert failure.value.code == code and len(calls) == 1
+    assert 'private' not in str(failure.value)
 
 
 def test_openrouter_endpoint_auth_and_model_are_sent_correctly(monkeypatch):

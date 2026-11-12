@@ -13,7 +13,8 @@ import {
   retryFinalSummaryJob,
   type MeetingListItem,
 } from "../system/backendApi";
-import type { FinalSummaryJob, Note, ReportRevision, SummarySnapshot, TranscriptSegment } from "../types";
+import type { ExportMeetingResponse, FinalSummaryJob, Note, ReportRevision, SummarySnapshot, TranscriptSegment } from "../types";
+import { ExportLocationActions } from "./ExportLocationActions";
 import { ReportView } from "./ReportView";
 
 interface HistoryModalProps {
@@ -76,6 +77,7 @@ export function HistoryModal({ open, onClose, currentMeetingId }: HistoryModalPr
   const [detail, setDetail] = useState<MeetingDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [actionNote, setActionNote] = useState<string | null>(null);
+  const [exported, setExported] = useState<ExportMeetingResponse | null>(null);
   const [busy, setBusy] = useState(false);
   const selectedIdRef = useRef<string | null>(null);
 
@@ -95,6 +97,7 @@ export function HistoryModal({ open, onClose, currentMeetingId }: HistoryModalPr
     selectedIdRef.current = null;
     setDetail(null);
     setActionNote(null);
+    setExported(null);
     loadList();
   }, [open, loadList]);
 
@@ -103,6 +106,7 @@ export function HistoryModal({ open, onClose, currentMeetingId }: HistoryModalPr
     selectedIdRef.current = id;
     setDetail(null);
     setActionNote(null);
+    setExported(null);
     setDetailLoading(true);
     Promise.all([fetchMeetingTranscript(id), fetchMeetingSummaries(id), fetchMeetingNotes(id), fetchMeetingReports(id), fetchFinalSummaryJob(id)])
       .then(([transcript, summaries, notes, reports, finalJob]) => { if (selectedIdRef.current === id) setDetail({ transcript, summaries, notes, reports, finalJob }); })
@@ -130,6 +134,7 @@ export function HistoryModal({ open, onClose, currentMeetingId }: HistoryModalPr
 
   const onRetryFinal = useCallback(async (id: string) => {
     setBusy(true);
+    setExported(null);
     try {
       const finalJob = await retryFinalSummaryJob(id);
       if (selectedIdRef.current === id) setDetail((current) => current ? { ...current, finalJob } : current);
@@ -140,6 +145,7 @@ export function HistoryModal({ open, onClose, currentMeetingId }: HistoryModalPr
 
   const onGenerateReport = useCallback(async (id: string) => {
     setBusy(true);
+    setExported(null);
     setActionNote(t("Generating report…"));
     try {
       const report = await generateMeetingReport(id);
@@ -155,8 +161,10 @@ export function HistoryModal({ open, onClose, currentMeetingId }: HistoryModalPr
   const onExport = useCallback(async (id: string) => {
     setBusy(true);
     setActionNote(null);
+    setExported(null);
     try {
       const result = await exportMeetingById(id);
+      setExported(result);
       setActionNote(`Exported to ${result.export_dir}`);
     } catch (err) {
       setActionNote(`Export failed: ${(err as Error).message}`);
@@ -172,6 +180,7 @@ export function HistoryModal({ open, onClose, currentMeetingId }: HistoryModalPr
       }
       setBusy(true);
       setActionNote(null);
+      setExported(null);
       try {
         await deleteMeeting(id);
         if (selectedId === id) {
@@ -277,7 +286,8 @@ export function HistoryModal({ open, onClose, currentMeetingId }: HistoryModalPr
             )}
           </div>
         </div>
-        {actionNote && <div className="modal__footer"><span className="history__note">{t(actionNote)}</span></div>}
+        {actionNote && <div className="modal__footer"><span className="history__note">{t(actionNote)}</span>
+          {exported && <ExportLocationActions exported={exported} />}</div>}
       </div>
     </div>
   );

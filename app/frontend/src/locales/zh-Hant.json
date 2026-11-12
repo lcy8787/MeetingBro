@@ -1,4 +1,10 @@
 {
+  "Open file location": "開啟文件位置",
+  "Copy path": "複製路徑",
+  "Path copied": "已複製路徑",
+  "Could not open the export location. The files may have moved or been deleted.": "無法開啟匯出位置，檔案可能已移動或刪除。",
+  "Could not copy the export path.": "無法複製匯出路徑。",
+  "Opening the export location requires a valid desktop export.": "開啟文件位置需要有效的桌面版匯出紀錄。",
   "Interface": "介面語言",
   "UI language": "介面語言",
   "Traditional Chinese": "繁體中文",
@@ -414,5 +420,21 @@
   "Automatic updates are off. Use Generate summary for an immediate summary.": "定時摘要已關閉。按「產生摘要」可即時整理目前逐字稿。",
   "Stopping a recording automatically generates one final summary after the transcript is saved, even when automatic updates are off. Model API charges may apply.": "停止錄音後，會在逐字稿儲存完成時自動產生一次最終摘要，不受定時開關影響，可能產生 API 費用。",
   "The model reached its output limit before finishing. No summary was published; automatic summaries are off.": "模型未完成答案就已用盡輸出額度，未發布摘要；自動摘要已關閉。",
-  "The model returned no final answer. No summary was published; automatic summaries are off.": "模型沒有回傳正式答案，未發布摘要；自動摘要已關閉。"
+  "The model returned no final answer. No summary was published; automatic summaries are off.": "模型沒有回傳正式答案，未發布摘要；自動摘要已關閉。",
+  "The model used an unidentified speaker. No summary was published; please generate again.": "模型使用了逐字稿未辨識的講者，未發布摘要，請重新產生。",
+  "The model returned invalid JSON. No summary was published; please generate again.": "模型回傳的 JSON 格式無效，未發布摘要，請重新產生。",
+  "The model returned an invalid report structure. No summary was published; please generate again.": "模型回傳的報告結構無效，未發布摘要，請重新產生。",
+  "The summary model request timed out. Please try again or check the model service.": "摘要模型請求逾時，請重試或檢查模型服務。",
+  "Some unsupported model claims were omitted. Check the linked transcript sources.": "部分缺乏逐字稿依據的模型敘述已略去，請核對連結的逐字稿來源。",
+  "The summary model rejected the credentials. Check the model settings.": "摘要模型拒絕了驗證資料，請檢查模型設定。",
+  "Could not connect to the summary model. Check the model service and try again.": "無法連線至摘要模型，請檢查服務後重試。",
+  "The summary model service returned an error. Check the service and try again.": "摘要模型服務回傳錯誤，請檢查服務後重試。",
+  "The model placed data in an incompatible component. No summary was published; retry to generate again.": "模型將資料放進不適用的元件，未發布摘要；請按「重試」重新產生。",
+  "The model cited missing or unknown transcript sources. No summary was published; retry to generate again.": "模型引用了缺少或不存在的逐字稿來源，未發布摘要；請按「重試」重新產生。",
+  "The model included a quantity absent from its cited transcript. No summary was published; retry to generate again.": "模型包含引用逐字稿未提供的數值，未發布摘要；請按「重試」重新產生。",
+  "The model's evidence does not match the cited transcript. No summary was published; retry to generate again.": "模型提供的證據與引用逐字稿不符，未發布摘要；請按「重試」重新產生。",
+  "The model could not generate a valid summary. Retry to generate again; automatic summaries are off.": "模型未能產生有效摘要；請按「重試」重新產生，自動摘要已關閉。",
+  "This meeting has no saved transcript to summarize.": "這份會議沒有已儲存的逐字稿可供摘要。",
+  "Location: {0}": "錯誤位置：{0}",
+  "Some metric cards were displayed as ordinary text because they contain no numeric values. Text and sources were preserved.": "部分統計卡未包含數值，已改用一般文字呈現；原文字與來源引用均已保留。"
 }

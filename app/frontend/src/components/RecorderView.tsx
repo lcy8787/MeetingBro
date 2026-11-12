@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { t, uiLocale, useI18n } from "../i18n";
-import { deleteMeeting, exportMeetingById, retryFinalSummaryJob } from "../system/backendApi";
+import { deleteMeeting, exportMeetingById, retryFinalSummaryJob, SummaryGenerationError } from "../system/backendApi";
 import type { FinalSummaryJob, ReportRevision, SessionState, SummarySnapshot, TranscriptSegment } from "../types";
 import { ReportView } from "./ReportView";
 import { blockText } from "./reportComponents";
 import { AudioLevelMeter } from "./AudioLevelMeter";
 import { useRecordingHistory } from "./useRecordingHistory";
 import { useSummaryGeneration } from "./useSummaryGeneration";
+import { RecorderNotice } from "./RecorderNotice";
+import { SummaryFailureNotice } from "./SummaryFailureNotice";
+import type { Notice, NoticeFeedback } from "./RecorderNotice";
 import "../recorder.css";
 
 interface RecorderProps {
@@ -23,7 +26,7 @@ interface RecorderProps {
   finalJob: FinalSummaryJob | null;
   error: string | null;
   errorCode: string | null;
-  feedback: string | null;
+  feedback: NoticeFeedback | null;
   liveTranscript: ReactNode;
   liveExtras: ReactNode;
   summaryOnly?: boolean;
@@ -124,20 +127,6 @@ function DeleteRecordingDialog({ title, busy, error, onCancel, onConfirm }: { ti
   </dialog>;
 }
 
-type Notice = { text: string; action?: "models" | "diagnostics" };
-
-function RecorderNotice({ notice, close, settings }: { notice: Notice; close: () => void; settings: () => void }) {
-  useEffect(() => {
-    if (notice.action) return;
-    const timer = window.setTimeout(close, 5500);
-    return () => window.clearTimeout(timer);
-  }, [notice, close]);
-  return <div className="mb-notice" role="status"><span>{notice.text}</span>
-    {notice.action && <button onClick={settings}>{t("Open Settings")}</button>}
-    <button className="mb-close" aria-label={t("Close")} onClick={close}>×</button>
-  </div>;
-}
-
 export function RecorderView(props: RecorderProps) {
   useI18n();
   const narrow = useNarrowWindow();
@@ -202,12 +191,12 @@ export function RecorderView(props: RecorderProps) {
   }, [props.active, props.summaryOnly]);
 
   useEffect(() => {
-    if (props.feedback) setNotice({ text: t(props.feedback) });
+    if (props.feedback) setNotice({ ...props.feedback, text: t(props.feedback.text) });
   }, [props.feedback]);
   useEffect(() => {
     if (!props.error) return;
     const modelError = props.errorCode === "llm_unavailable" || props.errorCode === "translation_unavailable";
-    setNotice({ text: t(props.error), action: modelError ? "models" : "diagnostics" });
+    setNotice({ text: t(props.error), type: modelError ? "warning" : "error", action: modelError ? "models" : "diagnostics" });
   }, [props.error, props.errorCode]);
   const closeNotice = useCallback(() => setNotice(null), []);
 
@@ -243,6 +232,9 @@ export function RecorderView(props: RecorderProps) {
   ]);
   const viewedTitle = (report?.report_type === "meeting" ? report.document.title : "") || item?.title;
   const job = previousJob?.status === "failed" && report && report.created_at > previousJob.updated_at ? null : previousJob;
+  useEffect(() => {
+    if (props.finalJob?.meeting_id === currentId && props.finalJob?.status === "failed") generation.setAutomatic(false);
+  }, [props.finalJob?.id, props.finalJob?.status, props.finalJob?.updated_at, currentId, generation.setAutomatic]);
   const summary = savedId ? summaryOf(detail?.summaries ?? []) : props.summary?.generation_method === "llm" ? props.summary : undefined;
   const transcript = savedId ? detail?.transcript ?? [] : props.segments;
   const loading = !!savedId && !detail && !history.detailError;
@@ -257,7 +249,7 @@ export function RecorderView(props: RecorderProps) {
     if (shareMenu.current) shareMenu.current.open = false;
     setBusy(true);
     try { await action(); }
-    catch (e) { setNotice({ text: t("Could not finish the action: {0}", (e as Error).message) }); }
+    catch (e) { setNotice({ text: t("Could not finish the action: {0}", (e as Error).message), type: "error" }); }
     finally { setBusy(false); }
   };
   const copy = () => run(async () => {
@@ -265,13 +257,13 @@ export function RecorderView(props: RecorderProps) {
     if (tab === "transcript") text = transcript.map(segment => segment.text).join("\n");
     else if (report) text = reportText(report);
     await navigator.clipboard.writeText(text);
-    setNotice({ text: t("Copied") });
+    setNotice({ text: t("Copied"), type: "success" });
   });
   const exportRecording = () => run(async () => {
     if (viewingCurrent && currentId) { await props.onExport(); return; }
     if (savedId) {
       const result = await exportMeetingById(savedId);
-      setNotice({ text: t("Export ready in {0}", result.export_dir) });
+      setNotice({ text: t("Export ready in {0}", result.export_dir), type: "success", exported: result });
     }
   });
   const remove = () => {
@@ -285,7 +277,7 @@ export function RecorderView(props: RecorderProps) {
       setSelectedId(current => current === id ? null : current);
       setPendingDelete(null);
       history.refreshList();
-      setNotice({ text: t("Recording deleted") });
+      setNotice({ text: t("Recording deleted"), type: "success" });
     });
   };
   const select = (id: string | null) => {
@@ -376,7 +368,8 @@ export function RecorderView(props: RecorderProps) {
             : t("Automatic updates are off. Use Generate summary for an immediate summary.")}</p>
           <p>{t("Stopping a recording automatically generates one final summary after the transcript is saved, even when automatic updates are off. Model API charges may apply.")}</p>
           {generation.busy && <p role="status">{t("The current model request will finish even if automatic summaries are turned off.")}</p>}
-          {generation.error && <p role="alert" className="mb-summary-error">{t(generation.error)} <button type="button" onClick={props.onModelSettings ?? props.onSettings}>{t("Open Settings")}</button></p>}
+          {generation.error && generation.errorMeetingId === viewedId && <SummaryFailureNotice error={generation.error} disabled={busy || generation.busy || loading || !viewedId}
+            retry={() => void generateSummary()} settings={props.onModelSettings ?? props.onSettings} />}
         </div>}
         {blank && <div className="mb-empty">
           <div className="mb-empty-mark"><Wave large /></div>
@@ -400,10 +393,11 @@ export function RecorderView(props: RecorderProps) {
           </section>)}
           {!loading && tab === "summary" && <>
             {job && <p className="mb-job" role="status">{t("Final summary: {0}", t(job.status))}
-              {job.error && ` · ${job.error}`}{job.status === "failed" && savedId && <button disabled={busy} onClick={() => void run(async () => {
-                await retryFinalSummaryJob(savedId); history.refreshDetail();
-              })}>{t("Retry")}</button>}
+              {job.error && !job.error_code && ` · ${t(job.error)}`}
             </p>}
+            {job?.status === "failed" && <SummaryFailureNotice error={new SummaryGenerationError(job.error_code ?? undefined, job.error_location)}
+              disabled={busy || generation.busy} settings={props.onModelSettings ?? props.onSettings}
+              retry={() => savedId ? void run(async () => { await retryFinalSummaryJob(savedId); history.refreshDetail(); }) : void generateSummary()} />}
             {report && <ReportView key={`${report.meeting_id}-${report.report_id}`} report={report} transcript={transcript} />}
             {!report && summary && <section className="mb-summary"><h2>{viewedTitle || t("Summary")}</h2><p>{summary.content}</p></section>}
             {!report && !summary && !history.detailError && <p className="mb-status">{t("No model-generated summary yet. Use Generate summary or enable automatic summaries.")}</p>}

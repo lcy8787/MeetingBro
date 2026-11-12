@@ -114,6 +114,8 @@ export interface FinalSummaryJob {
   language: LanguageCode;
   attempts: number;
   error: string | null;
+  error_code?: string | null;
+  error_location?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -132,6 +134,23 @@ export interface ExportMeetingResponse {
   meeting_id: string;
   export_dir: string;
   files: string[];
+  locationId?: string;
+}
+
+export interface ExportMeetingInput {
+  source?: string;
+  runtime_profile?: string;
+  summary_language?: string;
+  subtitle_language?: string;
+  export_root?: string;
+  export_dir?: string;
+  bilingual?: boolean;
+  target_language?: "zh" | "en" | "de";
+}
+
+export interface ExportRequestResult {
+  status: number;
+  result: ExportMeetingResponse | null;
 }
 
 export type SessionState = "starting" | "running" | "paused" | "ended";
