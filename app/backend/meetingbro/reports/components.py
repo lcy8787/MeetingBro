@@ -237,8 +237,10 @@ Use an empty speaker_id on ordinary blocks. On SpeakerQuote only, copy a nonempt
 verbatim from the cited transcript metadata and the allowed_speaker_ids list. If that list is empty,
 leave every speaker_id empty and do not use SpeakerQuote; use sourced editorial prose or an
 unattributed quote instead. Names spoken in text are not permission to create speaker IDs.
-SpeakerQuote requires an actual speaker_id and exact text/evidence_quote. DecisionPanel and ActionItems
-require an exact evidence_quote of the agreement, not a suggestion. Uncertain relationships stay prose.
+SpeakerQuote requires an actual speaker_id and exact text/evidence_quote. DecisionPanel with a single
+decision statement requires an exact evidence_quote of the agreement, not a suggestion. ActionItems
+may leave the block-level evidence_quote empty when every option has its own transcript citations;
+otherwise quote the exact instruction. Never paraphrase a quote. Uncertain relationships stay prose.
 Tools are available through tool_request={{name,query,section_index}} (otherwise null):
 list_components queries the catalog (query may be empty); compose_layout generates/validates layout;
 validate_structure checks a candidate against transcript; review_design checks repetition, nesting,

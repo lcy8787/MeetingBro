@@ -11,11 +11,11 @@ from pydantic import ValidationError
 import re
 from typing import Protocol, Sequence
 
-from ..llm.openai_compatible import LLMResponseError
-from ..schemas import DesignFinding, LanguageCode, ReportBlock, ReportDocument, ReportSection, TranscriptSegment
-from ..report_contracts import TABLE_TYPES, component_kind
+from ..llm.openai_compatible import LLMResponseError, extract_json_object
+from ..schemas import DesignFinding, LanguageCode, ReportBlock, ReportDocument, ReportOption, ReportSection, TranscriptSegment
+from ..report_contracts import CHART_TYPES, TABLE_TYPES, component_kind
 from .design import validate_layout, review_design
-from .evidence import validate_component_fields, validate_visual
+from .evidence import numeric, validate_component_fields, validate_visual
 from .agent import VisualDesignAgent
 from .errors import ReportValidationError, structure_location, validation_at
 
@@ -61,12 +61,11 @@ def _chunks(segments: Sequence[TranscriptSegment], limit: int = 8000) -> list[li
 
 
 def _payload(raw: str) -> dict:
-    content = raw.strip()
-    if content.startswith('```'):
-        content = re.sub(r'^```(?:json)?\s*|\s*```$', '', content, flags=re.IGNORECASE)
-    payload = json.loads(content)
-    if not isinstance(payload, dict):
-        raise ValueError('Invalid report response')
+    payload = extract_json_object(raw)
+    # Harmless presentation fields some models add even though the provider
+    # schema omits them; they are not content and must not invalidate a report.
+    for key in ('takeaways', 'warnings', 'design_review', 'generation_method'):
+        payload.pop(key, None)
     return payload
 
 
@@ -88,7 +87,7 @@ def _validate_text(text: str, ids: list[str], sources: dict[str, str]) -> None:
 
 def _supported_prose_sentences(value: str, ids: list[str], sources: dict[str, str]) -> str:
     """Omit whole unsupported sentences; never guess a replacement number or citation."""
-    pieces = re.split(r'(?<=[。！？])|(?<=[.!?])(?=\s+[A-Z])|(?<=\n)', value)
+    pieces = re.split(r'(?<=[。！？；、])|(?<=，)|(?<=[.!?])(?=\s+[A-Z])|(?<=[,;])(?=\s)|(?<=\n)', value)
     if len(pieces) < 2:
         return value
     kept = []
@@ -102,19 +101,91 @@ def _supported_prose_sentences(value: str, ids: list[str], sources: dict[str, st
         except ValueError as exc:
             if str(exc) not in {'Unsupported number', 'Unsupported Chinese number', 'Unsupported spoken number'}:
                 raise
-    return ''.join(kept).strip()
+    result = ''.join(kept).strip()
+    return re.sub(r'[，、；,;]\s*$', '', result).strip()
+
+
+def _repair_chart_observations(block: ReportBlock, *, findings: list[DesignFinding], section_id: str) -> None:
+    """Remove exact duplicate observations and degrade one-point charts losslessly.
+
+    Duplicated chart rows are redundant, not new evidence. A single observation
+    cannot be a comparison chart, so it is rendered as a sourced metric card
+    rather than rejecting an otherwise valid report.
+    """
+    if block.type not in CHART_TYPES or not block.data:
+        return
+    normalized = []
+    dropped = False
+    for datum in block.data:
+        raw = datum.value.strip()
+        try:
+            numeric(raw)
+            candidate = raw
+        except ValueError:
+            tokens = re.findall(r'\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?', raw)
+            candidate = tokens[0].replace(',', '') if len({token.replace(',', '') for token in tokens}) == 1 else None
+            if candidate is None:
+                dropped = True
+                continue
+            try:
+                numeric(candidate)
+            except ValueError:
+                dropped = True
+                continue
+        if candidate != datum.value:
+            datum.value = candidate
+        normalized.append(datum)
+    if dropped:
+        findings.append(DesignFinding(section_id=section_id, code='chart_observation_removed',
+            message='Removed a chart point without an exact numeric value; the surrounding prose keeps its content.', repaired=True))
+    seen: dict[tuple[str, str], object] = {}
+    unique = []
+    removed = False
+    for datum in normalized:
+        key = (datum.series, datum.label)
+        previous = seen.get(key)
+        if previous is None:
+            seen[key] = datum
+            unique.append(datum)
+            continue
+        if (datum.value, datum.unit, datum.evidence_quote, datum.source_segment_ids) == (
+                previous.value, previous.unit, previous.evidence_quote, previous.source_segment_ids):
+            removed = True
+            continue
+        # Conflicting values for the same observation must still fail closed.
+        unique.append(datum)
+    if removed:
+        findings.append(DesignFinding(section_id=section_id, code='duplicate_observation_removed',
+            message='Removed duplicate identical chart observations without changing the remaining data.', repaired=True))
+    block.data = unique
+    if dropped and not block.data:
+        block.type = 'EditorialText'
+        findings.append(DesignFinding(section_id=section_id, code='chart_presentation_repaired',
+            message='Displayed a chart without exact numeric observations as sourced prose.', repaired=True))
+        return
+    if 0 < len(block.data) < 2:
+        block.options = [ReportOption(
+            label=f'{datum.series} {datum.label}'.strip() or 'Value',
+            text=f'{datum.value} {datum.unit}'.strip(),
+            source_segment_ids=datum.source_segment_ids,
+        ) for datum in block.data]
+        block.data = []
+        block.type = 'KeyMetrics'
+        findings.append(DesignFinding(section_id=section_id, code='chart_presentation_repaired',
+            message='Displayed a one-point chart as a sourced metric card because a comparison chart needs two observations.', repaired=True))
 
 
 def _validated_block(item: dict, sources: dict[str, str], *, findings: list[DesignFinding], section_id: str, repair_prose: bool) -> ReportBlock:
     block = ReportBlock.model_validate(item)
     validate_component_fields(block)
+    _repair_chart_observations(block, findings=findings, section_id=section_id)
     if not block.text.strip():
         raise ValueError('A report block has no text')
     visible = ' '.join((block.title, block.text, block.detail, *block.columns))
     try:
         _validate_text(visible, block.source_segment_ids, sources)
     except ValueError as exc:
-        if (not repair_prose or block.type not in {'paragraph', 'EditorialText'}
+        if (not repair_prose
                 or str(exc) not in {'Unsupported number', 'Unsupported Chinese number', 'Unsupported spoken number'}):
             raise
         corrected_title = block.title
@@ -126,7 +197,14 @@ def _validated_block(item: dict, sources: dict[str, str], *, findings: list[Desi
             corrected_title = ''  # Omit an unsupported heading rather than inventing a count.
         corrected_text = _supported_prose_sentences(block.text, block.source_segment_ids, sources)
         corrected_detail = _supported_prose_sentences(block.detail, block.source_segment_ids, sources)
-        if not corrected_text or (corrected_title, corrected_text, corrected_detail) == (block.title, block.text, block.detail):
+        if not corrected_text:
+            if not (block.options or block.data or block.nodes or block.edges
+                    or block.cells or block.rows):
+                raise
+            # A sourced option list or visual encoding is the real content;
+            # drop only the unsupported introductory claim.
+            corrected_text = ''
+        elif (corrected_title, corrected_text, corrected_detail) == (block.title, block.text, block.detail):
             raise
         # Headings and every remaining sentence must still pass the original source checks.
         _validate_text(' '.join((corrected_title, corrected_text, corrected_detail, *block.columns)), block.source_segment_ids, sources)
@@ -138,7 +216,20 @@ def _validated_block(item: dict, sources: dict[str, str], *, findings: list[Desi
     for option in block.options:
         if not option.label.strip() or not option.text.strip():
             raise ValueError('Interactive option has no label or explanation')
-        _validate_text(option.label + ' ' + option.text, option.source_segment_ids, sources)
+        try:
+            _validate_text(option.label + ' ' + option.text, option.source_segment_ids, sources)
+        except ValueError as exc:
+            if not repair_prose or str(exc) not in {
+                    'Unsupported number', 'Unsupported Chinese number', 'Unsupported spoken number'}:
+                raise
+            corrected = _supported_prose_sentences(option.text, option.source_segment_ids, sources)
+            if not corrected or corrected == option.text:
+                raise
+            option.text = corrected
+            _validate_text(option.label + ' ' + option.text, option.source_segment_ids, sources)
+            findings.append(DesignFinding(section_id=section_id, code='unsupported_prose_removed',
+                message='Omitted an option clause containing a quantity absent from its cited transcript evidence.',
+                repaired=True))
     if block.type in TABLE_TYPES:
         if len(block.columns) < 2 or len(block.rows) < 2 or block.options:
             raise ValueError('Table needs comparable columns and rows')
@@ -193,7 +284,7 @@ def _validated_part(raw: str, chunk: list[tuple[str, str]]) -> ReportDocument:
         raise ValueError('Report needs a concise topic title')
     # Match the provider schema: up to eight sections, each with up to eight blocks.
     # Editorial brevity is a design preference, not a reason to discard valid sourced content.
-    all_ids = []
+    all_ids = list(dict.fromkeys(doc.executive_summary_source_segment_ids))
     seen = set()
     for index, (section, data) in enumerate(zip(doc.sections, payload['sections'])):
         if not section.id.strip() or section.id in seen or not section.title.strip():
@@ -202,7 +293,35 @@ def _validated_part(raw: str, chunk: list[tuple[str, str]]) -> ReportDocument:
         section.blocks = _validated_blocks(data.get('blocks'), sources, findings=doc.design_review, section_id=section.id, location=f'sections.{index}.blocks')
         ids = list(dict.fromkeys(key for block in section.blocks for key in block.source_segment_ids))
         with validation_at(f'sections.{index}.title'):
-            _validate_text(section.title, ids, sources)
+            try:
+                _validate_text(section.title, ids, sources)
+            except ReportValidationError as exc:
+                if exc.code != 'unsupported_report_claim':
+                    raise
+                candidates = [block.title.strip() for block in section.blocks if block.title.strip()]
+                candidates.extend(
+                    re.split(r'[，。！？；]', block.text.strip())[0].strip()
+                    for block in section.blocks if block.text.strip())
+                candidates.append(section.id.strip())
+                fallback = next((candidate for candidate in candidates if candidate), '')
+                for candidate in candidates:
+                    if not candidate:
+                        continue
+                    try:
+                        _validate_text(candidate, ids, sources)
+                    except ReportValidationError as fallback_error:
+                        if fallback_error.code == 'unsupported_report_claim':
+                            continue
+                        raise
+                    fallback = candidate
+                    break
+                else:
+                    raise
+                section.title = fallback
+                doc.design_review.append(DesignFinding(
+                    section_id=section.id, code='unsupported_heading_removed',
+                    message='Replaced a section heading containing an uncited quantity with sourced content.',
+                    repaired=True))
         all_ids.extend(ids)
         validate_layout(section)
         if any(f.code == 'metric_presentation_repaired' and f.section_id == section.id for f in doc.design_review):
@@ -215,13 +334,45 @@ def _validated_part(raw: str, chunk: list[tuple[str, str]]) -> ReportDocument:
         if expected and kinds != {expected}:
             section.layout_type = 'text' if kinds == {'paragraph'} else 'concept' if kinds == {'concept'} else 'mixed'
     if doc.executive_summary.strip():
-        with validation_at('executive_summary'):
-            _validate_text(doc.executive_summary, doc.executive_summary_source_segment_ids, sources)
+        try:
+            with validation_at('executive_summary'):
+                _validate_text(doc.executive_summary, doc.executive_summary_source_segment_ids, sources)
+        except ReportValidationError as exc:
+            if exc.code != 'unsupported_report_claim':
+                raise
+            corrected = _supported_prose_sentences(
+                doc.executive_summary, doc.executive_summary_source_segment_ids, sources)
+            if corrected == doc.executive_summary:
+                raise
+            doc.executive_summary = corrected
+            if not corrected:
+                doc.executive_summary_source_segment_ids = []
+            doc.design_review.append(DesignFinding(
+                section_id='executive_summary', code='unsupported_prose_removed',
+                message='Omitted an executive-summary sentence containing a quantity absent from its cited transcript evidence.',
+                repaired=True))
+            if corrected:
+                with validation_at('executive_summary'):
+                    _validate_text(corrected, doc.executive_summary_source_segment_ids, sources)
     elif doc.executive_summary_source_segment_ids:
         raise ValueError('Empty summary has sources')
     if doc.title:
         with validation_at('title'):
-            _validate_text(doc.title, all_ids, sources)
+            try:
+                _validate_text(doc.title, all_ids, sources)
+            except ReportValidationError as exc:
+                if exc.code != 'unsupported_report_claim':
+                    raise
+                fallback = next((section.title.strip() for section in doc.sections if section.title.strip()), '')
+                if fallback:
+                    _validate_text(fallback, all_ids, sources)
+                    doc.title = fallback
+                else:
+                    doc.title = ''
+                doc.design_review.append(DesignFinding(
+                    section_id='title', code='unsupported_heading_removed',
+                    message='Replaced a report title containing an uncited quantity with sourced content.',
+                    repaired=True))
     return doc
 
 
@@ -305,6 +456,10 @@ def generate_report(segments: Sequence[TranscriptSegment], *, language: Language
                     raise ReportGenerationError('Model-call budget exhausted', code='report_call_budget')
                 remaining_calls -= 1
             return original_client.chat(**kwargs)
+
+        @property
+        def max_output_tokens(self) -> int:
+            return int(getattr(original_client, 'max_output_tokens', 7200))
 
     budget_client = BudgetClient()
     result = ReportDocument(generation_method='llm')
@@ -404,5 +559,7 @@ def generate_report(segments: Sequence[TranscriptSegment], *, language: Language
         result.warnings.append('Some unsupported model claims were omitted. Check the linked transcript sources.')
     if any(finding.code == 'metric_presentation_repaired' for finding in result.design_review):
         result.warnings.append('Some metric cards were displayed as ordinary text because they contain no numeric values. Text and sources were preserved.')
+    if any(finding.code == 'chart_presentation_repaired' for finding in result.design_review):
+        result.warnings.append('A one-point chart was displayed as a sourced metric card because a comparison chart needs at least two observations.')
     # The hero orients the reader; body blocks are no longer copied into it.
     return result

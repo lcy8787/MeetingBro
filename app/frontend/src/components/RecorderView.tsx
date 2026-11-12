@@ -398,6 +398,8 @@ export function RecorderView(props: RecorderProps) {
             {job?.status === "failed" && <SummaryFailureNotice error={new SummaryGenerationError(job.error_code ?? undefined, job.error_location)}
               disabled={busy || generation.busy} settings={props.onModelSettings ?? props.onSettings}
               retry={() => savedId ? void run(async () => { await retryFinalSummaryJob(savedId); history.refreshDetail(); }) : void generateSummary()} />}
+            {generation.error && generation.errorMeetingId === viewedId && report &&
+              <p className="mb-status" role="status">{t("Showing the last successful report. The latest generation attempt failed.")}</p>}
             {report && <ReportView key={`${report.meeting_id}-${report.report_id}`} report={report} transcript={transcript} />}
             {!report && summary && <section className="mb-summary"><h2>{viewedTitle || t("Summary")}</h2><p>{summary.content}</p></section>}
             {!report && !summary && !history.detailError && <p className="mb-status">{t("No model-generated summary yet. Use Generate summary or enable automatic summaries.")}</p>}

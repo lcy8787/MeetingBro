@@ -63,13 +63,11 @@ def test_one_chunk_has_semantic_sections_without_duplicating_body_in_hero():
     assert [e['speaker_id'] for e in evidence] == ['Alice', 'Bob']
 
 
-@pytest.mark.parametrize('case', ['summary_source', 'summary_number', 'title_number', 'row_source', 'row_number', 'row_width', 'empty_table', 'option_number'])
+@pytest.mark.parametrize('case', ['summary_source', 'row_source', 'row_number', 'row_width', 'empty_table', 'option_number'])
 def test_all_new_surfaces_reject_unsupported_evidence(case):
     transcript, payload = sample()
     table = payload['sections'][0]['blocks'][2]
     if case == 'summary_source': payload['executive_summary_source_segment_ids'] = ['missing']
-    if case == 'summary_number': payload['executive_summary'] = '每月 99 元。'
-    if case == 'title_number': payload['sections'][0]['title'] = '99 元方案'
     if case == 'row_source': table['rows'][0]['source_segment_ids'] = ['missing']
     if case == 'row_number': table['rows'][0]['cells'][1] = '6 元'  # Present elsewhere, but absent in this row's evidence.
     if case == 'row_width': table['rows'][0]['cells'].append('額外欄位')
@@ -78,6 +76,25 @@ def test_all_new_surfaces_reject_unsupported_evidence(case):
     client = Client(payload)
     with pytest.raises(ReportGenerationError): generate_report(transcript, language='zh', client=client)
     assert len(client.calls) == 1
+
+
+def test_unsupported_executive_summary_sentence_is_omitted_with_a_visible_warning():
+    transcript, payload = sample()
+    payload['executive_summary'] = '每月 99 元。討論聚焦價格與功能取捨，仍需釐清共同方向。'
+    doc = generate_report(transcript, language='zh', client=Client(payload))
+    assert doc.executive_summary == '討論聚焦價格與功能取捨，仍需釐清共同方向。'
+    assert doc.executive_summary_source_segment_ids == ['a', 'b']
+    assert any(f.code == 'unsupported_prose_removed' and f.section_id == 'executive_summary'
+               and f.repaired for f in doc.design_review)
+    assert any('unsupported model claims' in warning for warning in doc.warnings)
+
+
+def test_unsupported_section_heading_is_replaced_with_sourced_content():
+    transcript, payload = sample()
+    payload['sections'][0]['title'] = '99 元方案'
+    doc = generate_report(transcript, language='zh', client=Client(payload))
+    assert doc.sections[0].title != '99 元方案'
+    assert any(f.code == 'unsupported_heading_removed' and f.repaired for f in doc.design_review)
 
 
 def test_later_chunks_continue_topics_and_keep_distinct_speakers():
@@ -208,3 +225,24 @@ def test_markdown_export_keeps_table_values(tmp_path):
         assert '甲方案 | 12 元' in markdown and '乙方案 | 6 元' in markdown
     finally:
         storage.close()
+
+
+def test_unsupported_intro_text_is_removed_while_sourced_options_remain():
+    transcript, payload = sample()
+    comparison = payload['sections'][0]['blocks'][1]
+    comparison['text'] = '十位同事的崗位不同，對觸控的評價也不同。'
+    doc = generate_report(transcript, language='zh', client=Client(payload))
+    saved = doc.sections[0].blocks[1]
+    assert saved.text == '對觸控的評價也不同。'
+    assert [option.label for option in saved.options] == ['Alice · 甲方案', 'Bob · 乙方案']
+    assert any(f.code == 'unsupported_prose_removed' and f.repaired for f in doc.design_review)
+
+
+def test_unsupported_option_clause_is_omitted_while_the_option_remains():
+    transcript, payload = sample()
+    option = payload['sections'][0]['blocks'][1]['options'][0]
+    option['text'] = '適合先試用。需要另購 99 元配件。'
+    doc = generate_report(transcript, language='zh', client=Client(payload))
+    saved = doc.sections[0].blocks[1].options[0]
+    assert saved.text == '適合先試用。'
+    assert any(f.code == 'unsupported_prose_removed' and f.repaired for f in doc.design_review)

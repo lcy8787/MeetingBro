@@ -109,10 +109,15 @@ const SUMMARY_ERRORS: Record<string, string> = {
   model_not_configured: "Configure a summary model in Settings before generating a summary.",
   model_authentication: "The summary model rejected the credentials. Check the model settings.",
   model_connection: "Could not connect to the summary model. Check the model service and try again.",
+  model_rate_limited: "The summary model is rate limiting requests. Wait a moment, then retry.",
   provider_error: "The summary model service returned an error. Check the service and try again.",
   model_timeout: "The summary model request timed out. Please try again or check the model service.",
+  invalid_response: "The summary model service returned an unreadable response. Check the base URL and model ID.",
   output_truncated: "The model reached its output limit before finishing. No summary was published; automatic summaries are off.",
   empty_response: "The model returned no final answer. No summary was published; automatic summaries are off.",
+  incomplete_response: "The model did not finish its answer. No summary was published; please generate again.",
+  refusal: "The model declined to generate a summary. No summary was published.",
+  report_call_budget: "The summary stopped at its safe model-call limit. No partial report was published.",
   invalid_report_speaker: "The model used an unidentified speaker. No summary was published; please generate again.",
   invalid_report_json: "The model returned invalid JSON. No summary was published; please generate again.",
   invalid_report_structure: "The model returned an invalid report structure. No summary was published; please generate again.",
@@ -130,7 +135,7 @@ export class SummaryGenerationError extends Error {
   constructor(readonly code: string = "invalid_report", location?: unknown) {
     super(Object.hasOwn(SUMMARY_ERRORS, code) ? SUMMARY_ERRORS[code] : "The model could not generate a valid summary. Retry to generate again; automatic summaries are off.");
     this.name = "SummaryGenerationError";
-    this.needsSettings = ["model_not_configured", "model_authentication", "model_connection", "model_timeout", "provider_error"].includes(code);
+    this.needsSettings = ["model_not_configured", "model_authentication", "model_connection", "model_timeout", "provider_error", "invalid_response"].includes(code);
     // Only display schema paths; never treat an arbitrary provider/model string as a location.
     const pathNames = new Set("parts sections blocks data nodes edges cells columns rows options source_segment_ids text title detail speaker_id evidence_quote executive_summary executive_summary_source_segment_ids id layout_type layout type label value unit series source target relation row column op block_index span emphasis children field".split(" "));
     this.location = typeof location === "string" && location.length <= 240

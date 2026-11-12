@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
-import re
 from typing import Sequence
 
 from ..llm import OpenAICompatibleClient
+from ..llm.openai_compatible import extract_json_object
 from ..schemas import LanguageCode, TranscriptSegment
 from .base import Summarizer, SummaryKind
 
@@ -331,9 +330,7 @@ class LLMSummarizer(Summarizer):
         )
         system_prompt = _FINALIZE_PROMPT.format(language=_LANG_NAMES.get(language, language))
         raw = self._complete_final(provider, system=system_prompt, user=user_content, max_tokens=1400)
-        match = re.search(r"\{.*\}", raw, re.DOTALL)
-        payload = match.group(0) if match else raw
-        result = json.loads(payload)
+        result = extract_json_object(raw)
         if not isinstance(result, dict) or not isinstance(result.get("chapters"), list) or not isinstance(result.get("action_items"), list):
             raise ValueError("finalize_meeting returned invalid JSON shape")
         final_summary = result.get("final_summary")

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 
+from ..llm.openai_compatible import LLMResponseError
 from ..schemas import ReportDocument
 from .components import TOOL_NAMES, generation_schema, list_components, planning_prompt
 from .design import compose_layout, review_design, validate_layout
@@ -35,14 +36,27 @@ class VisualDesignAgent:
             system += '\nThis run has one completion for this transcript part. Publish the complete report now; tool_request must be null. The registry and DSL are already available above.'
         context = dict(evidence)
         candidate = None
+        max_tokens = max(2048, int(getattr(self.client, "max_output_tokens", 7200)))
+        truncated_retries = 1
         for turn in range(self.max_turns):
-            raw = self.client.chat(system=system, user=json.dumps(context, ensure_ascii=False),
-                                   max_tokens=7200, temperature=0.1, response_schema=schema)
+            while True:
+                try:
+                    raw = self.client.chat(system=system, user=json.dumps(context, ensure_ascii=False),
+                                           max_tokens=max_tokens, temperature=0.1, response_schema=schema)
+                    break
+                except LLMResponseError as exc:
+                    # One bounded retry with a larger budget only when the
+                    # provider explicitly reports output truncation.
+                    if exc.code == "output_truncated" and truncated_retries and max_tokens < 24000:
+                        truncated_retries -= 1
+                        max_tokens = min(24000, max_tokens * 2)
+                        continue
+                    raise
             # Keep legacy fenced final responses readable, using the established validator.
             from .generator import ReportGenerationError, _payload
             payload = _payload(raw)
             request = payload.pop('tool_request', None)
-            if request is None:
+            if request in (None, {}):
                 return self.validate(json.dumps(payload, ensure_ascii=False), chunk)
             if turn == self.max_turns - 1:
                 raise ValueError('Visual Design Agent exhausted its tool budget without publishing')

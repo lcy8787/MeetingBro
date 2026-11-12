@@ -207,3 +207,67 @@ def test_explicit_numeric_place_values_are_equivalent_without_rounding(source,te
 def test_spoken_lists_and_scales_never_authorize_invented_arithmetic(source,text):
     from meetingbro.reports.generator import _validate_text
     with pytest.raises(ValueError): _validate_text(text,['s'],{'s':source})
+
+
+@pytest.mark.parametrize('wrapper', [
+    '```json\n{report}\n```',
+    'Here is the report JSON:\n{report}\nEnd of report.',
+    '\ufeff  {report}  ',
+])
+def test_report_json_accepts_fences_bom_and_surrounding_prose(wrapper):
+    report = json.dumps({'blocks': [{'type': 'bullet', 'text': 'Sales: 12 units', 'source_segment_ids': ['s']}]})
+    client = Client(wrapper.format(report=report))
+    doc = generate_report([segment()], language='en', client=client)
+    assert doc.generation_method == 'llm'
+    assert doc.sections[0].blocks[0].text == 'Sales: 12 units'
+
+
+@pytest.mark.parametrize('raw', ['{"blocks":[', 'not a report', ''])
+def test_truncated_or_missing_json_has_a_precise_failure_code(raw):
+    with pytest.raises(ReportGenerationError) as failure:
+        generate_report([segment()], language='en', client=Client(raw))
+    assert failure.value.code == 'invalid_report_json'
+
+
+def test_harmless_presentation_fields_do_not_invalidate_a_valid_report():
+    payload = {'title': 'Sales', 'executive_summary': '', 'executive_summary_source_segment_ids': [],
+               'takeaways': [], 'warnings': [], 'generation_method': 'llm',
+               'sections': [{'id': 'sales', 'title': 'Sales', 'layout_type': 'text',
+                             'blocks': [{'type': 'EditorialText', 'text': 'Sales were 12 units',
+                                         'source_segment_ids': ['s']}]}]}
+    doc = generate_report([segment()], language='en', client=Client(json.dumps(payload)))
+    assert doc.title == 'Sales' and doc.generation_method == 'llm'
+
+
+@pytest.mark.parametrize('source,text', [
+    ('準備三款宣傳素材。', '準備 3 款宣傳素材。'),
+    ('有兩名同事加入。', '有 2 名同事加入。'),
+    ('收到十二宗投訴。', '收到 12 宗投訴。'),
+    ('這是一款新產品。', '這是 1 款新產品。'),
+    ('這是一台標準電腦。', '這是 1 台標準電腦。'),
+])
+def test_common_chinese_classifiers_accept_equivalent_digits_without_loosening_counts(source, text):
+    from meetingbro.reports.generator import _validate_text
+    _validate_text(text, ['s'], {'s': source})
+
+
+def test_chart_values_accept_chinese_numerals_in_the_exact_quote():
+    from meetingbro.reports.evidence import exact_quote, value_in_quote
+    assert value_in_quote('47.8', '度', '四十七點八度')
+    sources = {'a': '最高溫度測。', 'b': '達到了四十七點八度。'}
+    exact_quote('最高溫度測達到了四十七點八度', ['a', 'b'], sources)
+
+
+def test_grounded_chart_with_chinese_numeral_quotes_is_not_rejected():
+    text = '機身溫度四十七點八度。對照版本五十六點四度。'
+    payload = {'title': '溫度', 'executive_summary': '', 'executive_summary_source_segment_ids': [], 'sections': [{
+        'id': 'temp', 'title': '溫度比較', 'layout_type': 'statistic', 'blocks': [{
+            'type': 'BarChart', 'title': '實測溫度', 'text': '兩個版本的實測溫度。',
+            'source_segment_ids': ['s'], 'data': [
+                {'label': '機身', 'value': '47.8', 'unit': '度', 'series': '溫度',
+                 'evidence_quote': '機身溫度四十七點八度。', 'source_segment_ids': ['s']},
+                {'label': '對照版本', 'value': '56.4', 'unit': '度', 'series': '溫度',
+                 'evidence_quote': '對照版本五十六點四度。', 'source_segment_ids': ['s']},
+            ]}]}]}
+    doc = generate_report([segment(text)], language='zh', client=Client(json.dumps(payload, ensure_ascii=False)))
+    assert [item.value for item in doc.sections[0].blocks[0].data] == ['47.8', '56.4']

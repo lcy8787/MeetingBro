@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from urllib.parse import urlparse
@@ -20,9 +21,50 @@ _LOGGER = logging.getLogger(__name__)
 class LLMResponseError(RuntimeError):
     """A provider response cannot be used as a completed model answer."""
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, *, retryable: bool = False,
+                 structured_unsupported: bool = False) -> None:
         super().__init__(message)
         self.code = code
+        self.retryable = retryable
+        self.structured_unsupported = structured_unsupported
+
+
+def extract_json_object(raw: str) -> dict[str, Any]:
+    """Extract one JSON object from provider text, including fenced or prefixed output.
+
+    A truncated object remains a JSON decode error; callers can then report a
+    precise truncation or invalid-JSON diagnosis instead of accepting partial data.
+    """
+    text = (raw or "").lstrip("\ufeff").strip()
+    candidates = [text]
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.IGNORECASE | re.DOTALL)
+    if fenced:
+        candidates.insert(0, fenced.group(1).strip())
+    last_error: json.JSONDecodeError | None = None
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            continue
+        if isinstance(value, dict):
+            return value
+        last_error = json.JSONDecodeError("Expected a JSON object", candidate, 0)
+    # Some models prepend a prose sentence before otherwise valid JSON.
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(text):
+        if character != "{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            continue
+        if isinstance(value, dict):
+            return value
+    if last_error is not None:
+        raise last_error
+    raise json.JSONDecodeError("No JSON object found", text, 0)
 
 
 @lru_cache(maxsize=1)
@@ -98,6 +140,9 @@ class OpenAICompatibleConfig:
     base_url: str
     model: str
     timeout_seconds: float = 45.0
+    max_output_tokens: int = 0  # 0 = provider-appropriate default
+    max_attempts: int = 2  # one transient retry; output errors are never retried here
+    retry_backoff_seconds: float = 0.5
 
 
 class OpenAICompatibleClient:
@@ -151,18 +196,42 @@ class OpenAICompatibleClient:
             )
 
         timeout = float(os.environ.get("MEETINGBRO_LLM_TIMEOUT_SECONDS", "45"))
+        try:
+            max_output = max(0, int(os.environ.get("MEETINGBRO_LLM_MAX_OUTPUT_TOKENS", "0")))
+        except ValueError:
+            max_output = 0
+        try:
+            max_attempts = min(3, max(1, int(os.environ.get("MEETINGBRO_LLM_MAX_ATTEMPTS", "2"))))
+        except ValueError:
+            max_attempts = 2
+        try:
+            backoff = max(0.0, min(5.0, float(os.environ.get("MEETINGBRO_LLM_RETRY_BACKOFF_SECONDS", "0.5"))))
+        except ValueError:
+            backoff = 0.5
         return cls(
             OpenAICompatibleConfig(
                 api_key=api_key,
                 base_url=base_url.rstrip("/"),
                 model=model,
                 timeout_seconds=timeout,
+                max_output_tokens=max_output,
+                max_attempts=max_attempts,
+                retry_backoff_seconds=backoff,
             )
         )
 
     @property
     def model(self) -> str:
         return self._cfg.model
+
+    @property
+    def max_output_tokens(self) -> int:
+        """Bound for one completion; reasoning-disabled OpenRouter models can emit long JSON."""
+        if self._cfg.max_output_tokens > 0:
+            return self._cfg.max_output_tokens
+        if urlparse(self._cfg.base_url).hostname == "openrouter.ai":
+            return 12000
+        return 7200
 
     def chat(
         self,
@@ -178,6 +247,7 @@ class OpenAICompatibleClient:
             url = f"{base_url}/chat/completions"
         else:
             url = f"{base_url}/v1/chat/completions"
+        expects_json = response_schema is not None
         body: dict[str, Any] = {
             "model": self._cfg.model,
             "messages": [
@@ -194,19 +264,57 @@ class OpenAICompatibleClient:
             reasoning = _openrouter_reasoning(self._cfg.model)
             if reasoning is not None:
                 body["reasoning"] = reasoning
-            if response_schema is not None:
+            if expects_json:
                 body["response_format"] = {"type": "json_schema", "json_schema": {
                     "name": "meeting_report", "strict": True, "schema": response_schema,
                 }}
                 body["provider"] = {"require_parameters": True}
-        elif response_schema is not None:
+        elif expects_json:
             body["response_format"] = {"type": "json_object"}
+
+        fallback_used = False
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                return self._post(url, body, expects_json=expects_json)
+            except LLMResponseError as exc:
+                if exc.structured_unsupported:
+                    if not fallback_used:
+                        fallback_used = True
+                        # A provider may reject strict JSON Schema even though it
+                        # accepts ordinary chat completions. Retry once with the
+                        # prompt's schema only; never silently drop the request.
+                        body.pop("response_format", None)
+                        body.pop("provider", None)
+                        _LOGGER.info(
+                            "LLM structured output unsupported model=%s; retrying without response_format",
+                            self._cfg.model,
+                        )
+                        continue
+                    raise LLMResponseError(
+                        "provider_error",
+                        "The model provider rejected the requested structured output parameters.",
+                    ) from exc
+                if exc.retryable and attempt < self._cfg.max_attempts:
+                    delay = self._cfg.retry_backoff_seconds * (2 ** (attempt - 1))
+                    if delay > 0:
+                        time.sleep(delay)
+                    _LOGGER.info(
+                        "Retrying transient LLM failure model=%s code=%s attempt=%s",
+                        self._cfg.model, exc.code, attempt,
+                    )
+                    continue
+                raise
+
+    def _post(self, url: str, body: dict[str, Any], *, expects_json: bool) -> str:
         req = urllib.request.Request(
             url,
             data=json.dumps(body).encode("utf-8"),
             headers={
                 "Authorization": f"Bearer {self._cfg.api_key}",
                 "Content-Type": "application/json",
+                "Accept": "application/json",
             },
             method="POST",
         )
@@ -216,50 +324,116 @@ class OpenAICompatibleClient:
             with urllib.request.urlopen(req, timeout=self._cfg.timeout_seconds) as resp:
                 raw = resp.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
-            _LOGGER.warning(
-                "LLM HTTP error model=%s url=%s code=%s",
-                self._cfg.model,
-                url,
-                exc.code,
+            detail = self._error_body(exc)
+            status = exc.code
+            marker = re.search(
+                r"response[ _-]?format|json[ _-]?schema|structured|require_parameters|no endpoints|unsupported",
+                detail,
+                re.IGNORECASE,
             )
-            code = 'model_authentication' if exc.code in {401, 403} else 'provider_error'
-            raise LLMResponseError(code, f'The summary model service returned HTTP {exc.code}.') from exc
-        except TimeoutError:
-            raise
+            structured_unsupported = bool(
+                expects_json and status in {400, 404, 422} and
+                (marker or (urlparse(url).hostname == "openrouter.ai" and status == 404))
+            )
+            retryable = status in {408, 429, 500, 502, 503, 504}
+            if status in {401, 403}:
+                code, message = "model_authentication", f"The summary model service returned HTTP {status}."
+            elif status == 429:
+                code, message = "model_rate_limited", "The summary model service is rate limiting requests."
+            elif status in {408, 504}:
+                code, message = "model_timeout", "The summary model service timed out."
+            elif structured_unsupported:
+                code, message = "structured_output_unsupported", "The provider rejected structured output parameters."
+            else:
+                code, message = "provider_error", f"The summary model service returned HTTP {status}."
+            _LOGGER.warning(
+                "LLM HTTP error model=%s url=%s code=%s retryable=%s fallback=%s",
+                self._cfg.model, url, status, retryable, structured_unsupported,
+            )
+            raise LLMResponseError(code, message, retryable=retryable,
+                                   structured_unsupported=structured_unsupported) from exc
+        except TimeoutError as exc:
+            raise LLMResponseError("model_timeout", "The summary model request timed out.", retryable=True) from exc
         except urllib.error.URLError as exc:
-            code = 'model_timeout' if isinstance(exc.reason, TimeoutError) else 'model_connection'
-            raise LLMResponseError(code, 'The summary model service could not be reached.') from exc
+            if isinstance(exc.reason, TimeoutError):
+                raise LLMResponseError("model_timeout", "The summary model request timed out.", retryable=True) from exc
+            raise LLMResponseError("model_connection", "The summary model service could not be reached.", retryable=True) from exc
+        except UnicodeDecodeError as exc:
+            raise LLMResponseError("invalid_response", "The model provider returned an unreadable response.") from exc
+        except OSError as exc:
+            raise LLMResponseError("model_connection", "The summary model service could not be reached.", retryable=True) from exc
         finally:
             duration = time.time() - start
             _LOGGER.debug("LLM request finished model=%s duration=%.3fs", self._cfg.model, duration)
 
-        data = json.loads(raw)
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            _LOGGER.warning("LLM returned non-JSON data model=%s", self._cfg.model)
+            raise LLMResponseError("invalid_response", "The model provider returned invalid JSON.") from exc
         if not isinstance(data, dict):
-            raise LLMResponseError('invalid_response', 'The model provider returned an invalid response.')
-        if data.get('error'):
-            raise LLMResponseError('provider_error', 'The model provider returned an error instead of an answer.')
-        choices = data.get('choices')
+            raise LLMResponseError("invalid_response", "The model provider returned an invalid response.")
+        if data.get("error"):
+            raise LLMResponseError("provider_error", "The model provider returned an error instead of an answer.")
+        choices = data.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-            raise LLMResponseError('empty_response', 'The model provider returned no completed answer.')
+            raise LLMResponseError("empty_response", "The model provider returned no completed answer.")
         choice = choices[0]
-        if choice.get('finish_reason') == 'length':
-            raise LLMResponseError('output_truncated', 'The model reached its output token limit before completing the answer. Reduce reasoning or increase the output limit.')
-        if choice.get('finish_reason') in {'error', 'content_filter'}:
-            raise LLMResponseError('incomplete_response', 'The model provider did not complete the answer.')
-        message = choice.get("message", {}) if isinstance(choice, dict) else {}
-        content = ""
+        finish_reason = choice.get("finish_reason")
+        if finish_reason in {"error", "content_filter"}:
+            raise LLMResponseError("incomplete_response", "The model provider did not complete the answer.")
+        message = choice.get("message", {})
+        content: Any = ""
         # Primary: standard OpenAI-style chat message content
         if isinstance(message, dict):
-            if message.get('refusal'):
-                raise LLMResponseError('refusal', 'The model declined to generate an answer.')
+            if message.get("refusal"):
+                raise LLMResponseError("refusal", "The model declined to generate an answer.")
             # Reasoning is not the final answer, even if it contains JSON.
             content = message.get("content") or message.get("text") or ""
         # Fallbacks for other provider shapes
         if not content:
-            content = choice.get("text") if isinstance(choice, dict) else ""
+            content = choice.get("text") or ""
         if isinstance(content, list):
-            content = ''.join(part.get('text', '') for part in content if isinstance(part, dict) and part.get('type') == 'text')
-        content = content.strip() if isinstance(content, str) else ''
+            content = "".join(
+                part.get("text", "") for part in content
+                if isinstance(part, dict) and part.get("type") == "text"
+            )
+        elif isinstance(content, dict):
+            content = content.get("text") or content.get("content") or ""
+        content = content.strip() if isinstance(content, str) else ""
         if not content:
-            raise LLMResponseError('empty_response', 'The model returned no final answer. Reasoning text cannot be used as a summary.')
+            if finish_reason == "length":
+                raise LLMResponseError(
+                    "output_truncated",
+                    "The model reached its output token limit before completing the answer. Reduce reasoning or increase the output limit.",
+                )
+            raise LLMResponseError(
+                "empty_response",
+                "The model returned no final answer. Reasoning text cannot be used as a summary.",
+            )
+        if finish_reason == "length":
+            # Providers sometimes report "length" even when the JSON object is
+            # complete. Accept only structurally complete JSON; truncated JSON
+            # still fails with an accurate diagnosis.
+            if expects_json:
+                try:
+                    extract_json_object(content)
+                except json.JSONDecodeError as exc:
+                    raise LLMResponseError(
+                        "output_truncated",
+                        "The model reached its output token limit before completing the answer. Reduce reasoning or increase the output limit.",
+                    ) from exc
+            else:
+                raise LLMResponseError(
+                    "output_truncated",
+                    "The model reached its output token limit before completing the answer. Reduce reasoning or increase the output limit.",
+                )
         return content
+
+    @staticmethod
+    def _error_body(exc: urllib.error.HTTPError) -> str:
+        try:
+            body = exc.read(4096)
+            return body.decode("utf-8", errors="replace") if isinstance(body, bytes) else str(body)
+        except Exception:
+            return ""

@@ -11,7 +11,7 @@ CHINESE_NUMBERS = re.compile(
     r"(?:[零〇一二兩两三四五六七八九十百千萬万億亿兆]{2,}(?:[點点][零〇一二兩两三四五六七八九]+)?"
     r"|[零〇一二兩两三四五六七八九][點点][零〇一二兩两三四五六七八九]+"
     r"|[十百千萬万億亿兆]"
-    r"|[零〇一二兩两三四五六七八九](?=個|人|台|次|年|月|日|度|克|元|吋|寸|尼特|赫茲|分鐘|秒))"
+    r"|[零〇一二兩两三四五六七八九](?=個|个|人|名|台|次|年|月|日|度|克|元|吋|寸|尼特|赫茲|分鐘|秒|款|宗|張|张|部|間|间|家|場|场|條|条|種|种|件|頁|页|章|節|节|級|级|倍|套|組|组|層|层|份|項|项|位))"
 )
 _DIGITS = dict(zip('零〇一二兩两三四五六七八九', [0,0,1,2,2,2,3,4,5,6,7,8,9]))
 _UNITS = {'十':10,'百':100,'千':1000,'萬':10000,'万':10000,'億':100000000,'亿':100000000,'兆':1000000000000}
@@ -152,7 +152,15 @@ def number_tokens(text, *, source=False):
     masked = re.sub(r'(?<=每)一(?=[個个位項项份種种件類类])', ' ', masked)
     for match in ARABIC_NUMBERS.finditer(masked):
         raw=match.group();is_percent=raw.endswith(('%','％'))
-        arabic.add((_kind(masked,match.end(),is_percent),_decimal(raw.rstrip('%％'))))
+        value=_decimal(raw.rstrip('%％'))
+        kind=_kind(masked,match.end(),is_percent)
+        tail=masked[match.end():]
+        prefix=masked[max(0,match.start()-5):match.start()]
+        quantified=re.search(r'只有|僅有|仅有|只剩|至少|最多|恰好|剛好|刚好|合計|合计|總共|总共|唯一|第', prefix)
+        duration=re.match(r'\s*[個个](?:月|年|星期|禮拜|礼拜|小時|小时)', tail)
+        if value == 1 and not is_percent and tail.lstrip().startswith(('個','个','項','项','位','份','款','名','宗','張','张','部','台','間','间','家','場','场','條','条','種','种','件','頁','页','章','節','节','級','级','套','組','组','層','层')) and not quantified and not duration:
+            kind='indefinite'
+        arabic.add((kind,value))
     for match in CHINESE_NUMBERS.finditer(masked):
         value=_chinese(match.group())
         if match.start() and masked[match.start()-1] in {'負','负','−','-'}:
@@ -163,7 +171,7 @@ def number_tokens(text, *, source=False):
         # A non-quantified 一個 is an indefinite noun phrase, not a measurement of one.
         quantified = re.search(r'只有|僅有|仅有|只剩|至少|最多|恰好|剛好|刚好|合計|合计|總共|总共|唯一|第', prefix)
         duration = re.match(r'[個个](?:月|年|星期|禮拜|礼拜|小時|小时)', tail)
-        if value == 1 and tail.startswith(('個','个','項','项','位','份')) and not quantified and not duration:
+        if value == 1 and tail.startswith(('個','个','項','项','位','份','款','名','宗','張','张','部','台','間','间','家','場','场','條','条','種','种','件','頁','页','章','節','节','級','级','套','組','组','層','层')) and not quantified and not duration:
             kind = 'indefinite'
         chinese.add((kind,value))
     for match in _SPOKEN.finditer(masked):

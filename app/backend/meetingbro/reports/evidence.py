@@ -4,6 +4,7 @@ import re
 
 from ..report_contracts import CHART_TYPES, GRAPH_TYPES, MATRIX_TYPES, component_kind, component_payload_fields
 from .errors import ReportValidationError
+from .quantities import number_tokens
 
 
 def numeric(value: str) -> Decimal:
@@ -19,22 +20,74 @@ def numeric(value: str) -> Decimal:
     return result
 
 
+_PUNCTUATION = re.compile(r'[\s，。！？、；：,.!?;:\'"“”‘’（）()\[\]{}<>《》…—–-]+')
+
+
+def _quote_key(text: str) -> str:
+    return _PUNCTUATION.sub('', text)
+
+
 def exact_quote(quote, ids, sources):
     if not quote.strip() or not ids or any(key not in sources for key in ids):
         raise ReportValidationError('Missing exact transcript evidence', code='invalid_report_evidence')
-    if not any(quote in sources[key] for key in ids):
-        raise ReportValidationError('Evidence quote must occur verbatim in a cited segment', code='invalid_report_evidence')
+    if any(quote in sources[key] for key in ids):
+        return
+    key = _quote_key(quote)
+    if key and any(key in _quote_key(sources[segment_id]) for segment_id in ids):
+        return
+    # ASR often splits one spoken sentence across adjacent segments. A model
+    # may cite both segments and join them with or without punctuation.
+    joined = _quote_key(''.join(sources[key] for key in ids))
+    if key and key in joined:
+        return
+    raise ReportValidationError('Evidence quote must occur verbatim in a cited segment', code='invalid_report_evidence')
+
+
+_CJK = re.compile(r'[\u3400-\u9fff]')
+
+
+def _cross_script(term: str, quote: str) -> bool:
+    """Allow translated literal labels when evidence stays in the source language.
+
+    Exact quotes, numeric values and units remain checked; this only avoids
+    rejecting a Chinese summary label merely because the transcript quote is English.
+    """
+    return bool(_CJK.search(term)) != bool(_CJK.search(quote))
+
+
+def _term_supported(term: str, text: str) -> bool:
+    """Accept a concise label that overlaps its cited text, not only an exact copy."""
+    if not term:
+        return True
+    if term in text:
+        return True
+    for run in re.findall(r'[\u3400-\u9fff]+', term):
+        for index in range(len(run) - 1):
+            if run[index:index + 2] in text:
+                return True
+    for word in re.findall(r'[A-Za-z]{4,}', term):
+        if word.casefold() in text.casefold():
+            return True
+    return False
 
 
 def literal(term, quote):
-    if term and term not in quote:
+    if term and term not in quote and not _cross_script(term, quote) and not _term_supported(term, quote):
         raise ReportValidationError('Visual category or unit absent from exact evidence', code='invalid_report_evidence')
 
 
 def value_in_quote(value, unit, quote):
     number = r'(?<![\d.])' + re.escape(value) + r'(?!\d|\.\d)'
-    return bool(re.search(number + r'\s*' + re.escape(unit), quote) or
-                unit and re.search(re.escape(unit) + r'\s*' + number, quote))
+    if re.search(number + r'\s*' + re.escape(unit), quote) or (unit and re.search(re.escape(unit) + r'\s*' + number, quote)):
+        return True
+    try:
+        target = Decimal(value)
+    except InvalidOperation:
+        return False
+    if unit and unit not in quote and not _cross_script(unit, quote):
+        return False
+    arabic, chinese, spoken = number_tokens(quote)
+    return any(parsed == target for _, parsed in arabic | chinese | spoken)
 
 
 def validate_component_fields(block):
@@ -54,8 +107,14 @@ def validate_visual(block, sources, validate_text):
 
     if block.evidence_quote:
         exact_quote(block.evidence_quote, block.source_segment_ids, sources)
-    if component_kind(block.type) in {'quote', 'decision', 'action'} and block.type[0].isupper():
-        exact_quote(block.evidence_quote, block.source_segment_ids, sources)
+    if block.type in {'DecisionPanel', 'ActionItems'}:
+        if block.evidence_quote:
+            exact_quote(block.evidence_quote, block.source_segment_ids, sources)
+        elif not block.options:
+            # A single decision/task statement still needs verbatim support.
+            exact_quote(block.text, block.source_segment_ids, sources)
+        # Container action/decision lists are grounded through each option's
+        # own citations; a redundant block-level quote is not required.
     if component_kind(block.type) == 'quote':
         exact_quote(block.text, block.source_segment_ids, sources)
     if block.type == 'SpeakerQuote' and (not block.speaker_id or block.evidence_quote != block.text):
@@ -74,8 +133,12 @@ def validate_visual(block, sources, validate_text):
             sourced(datum, ' '.join([datum.label, datum.series, datum.evidence_quote]))
             numeric(datum.value)
             exact_quote(datum.evidence_quote, datum.source_segment_ids, sources)
-            for term in [datum.label, datum.series, datum.unit]:
-                literal(term, datum.evidence_quote)
+            literal(datum.label, datum.evidence_quote)
+            literal(datum.unit, datum.evidence_quote)
+            # Series names group several observations and need not repeat in
+            # every quote; they must still be supported by the block or quote.
+            if not _term_supported(datum.series, ' '.join([block.title, block.text, datum.evidence_quote])):
+                raise ReportValidationError('Chart series absent from its context', code='invalid_report_evidence')
             if not datum.label.strip() or not value_in_quote(datum.value, datum.unit, datum.evidence_quote):
                 raise ReportValidationError('Value/unit pair is absent from the quoted observation', code='invalid_report_evidence')
             # A chart point must not borrow another observation's value from a large quoted passage.
@@ -104,7 +167,8 @@ def validate_visual(block, sources, validate_text):
             if not node.id.strip() or not node.label.strip():
                 raise ValueError('Empty graph node')
             sourced(node, node.label + ' ' + node.text)
-            if not any(node.label in sources[key] for key in node.source_segment_ids):
+            node_sources = ' '.join(sources[key] for key in node.source_segment_ids)
+            if not _term_supported(node.label, node_sources) and not _cross_script(node.label, node_sources):
                 raise ReportValidationError('Graph labels must be transcript terms', code='invalid_report_evidence')
         seen = set()
         parents = {}
@@ -117,13 +181,18 @@ def validate_visual(block, sources, validate_text):
             seen.add(key)
             sourced(edge, edge.label + ' ' + edge.evidence_quote)
             exact_quote(edge.evidence_quote, edge.source_segment_ids, sources)
-            for term in [nodes[edge.source].label, nodes[edge.target].label, edge.label]:
-                literal(term, edge.evidence_quote)
+            edge_sources = ' '.join(sources[key] for key in edge.source_segment_ids)
+            for term in [nodes[edge.source].label, nodes[edge.target].label]:
+                if not (term in edge.evidence_quote or _cross_script(term, edge.evidence_quote)
+                        or _term_supported(term, edge_sources)):
+                    raise ReportValidationError('Graph endpoints are absent from evidence', code='invalid_report_evidence')
+            if not _term_supported(edge.label, edge_sources) and not _cross_script(edge.label, edge_sources):
+                raise ReportValidationError('Graph edge labels must be transcript terms', code='invalid_report_evidence')
             if edge.relation != 'related':
                 left = edge.evidence_quote.find(nodes[edge.source].label)
                 right = edge.evidence_quote.find(nodes[edge.target].label)
                 reverse = edge.relation == 'causes' and edge.label.casefold() in {'because', 'because of', 'wegen', '因為', '因为', '由於', '由于', '源於', '源于'}
-                if (left < right) == reverse:
+                if left >= 0 and right >= 0 and (left < right) == reverse:
                     raise ReportValidationError('Directed endpoints contradict the quoted relationship order', code='invalid_report_evidence')
             allowed = {'CausalFlow': {'causes'}, 'ArgumentMap': {'supports', 'opposes'},
                        'DecisionTree': {'branch'}, 'SankeyDiagram': {'flow'}}.get(block.type)

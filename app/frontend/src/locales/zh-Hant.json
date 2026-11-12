@@ -436,5 +436,12 @@
   "The model could not generate a valid summary. Retry to generate again; automatic summaries are off.": "模型未能產生有效摘要；請按「重試」重新產生，自動摘要已關閉。",
   "This meeting has no saved transcript to summarize.": "這份會議沒有已儲存的逐字稿可供摘要。",
   "Location: {0}": "錯誤位置：{0}",
-  "Some metric cards were displayed as ordinary text because they contain no numeric values. Text and sources were preserved.": "部分統計卡未包含數值，已改用一般文字呈現；原文字與來源引用均已保留。"
+  "Some metric cards were displayed as ordinary text because they contain no numeric values. Text and sources were preserved.": "部分統計卡未包含數值，已改用一般文字呈現；原文字與來源引用均已保留。",
+  "A one-point chart was displayed as a sourced metric card because a comparison chart needs at least two observations.": "只有一個數據點的圖表已改以來源標註的數據卡呈現，因為比較圖表需要至少兩個觀察值。",
+  "The summary model is rate limiting requests. Wait a moment, then retry.": "摘要模型服務正在限制請求頻率，請稍候再試。",
+  "The summary model service returned an unreadable response. Check the base URL and model ID.": "摘要模型服務回傳無法解析的回應，請檢查 Base URL 與模型 ID。",
+  "The model did not finish its answer. No summary was published; please generate again.": "模型未完成答案，未發布摘要，請重新產生。",
+  "The model declined to generate a summary. No summary was published.": "模型拒絕產生摘要，未發布任何摘要。",
+  "The summary stopped at its safe model-call limit. No partial report was published.": "摘要已達安全模型呼叫上限，未發布不完整報告。",
+  "Showing the last successful report. The latest generation attempt failed.": "目前顯示最後一次成功產生的報告；最新一次生成失敗。"
 }

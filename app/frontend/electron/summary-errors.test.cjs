@@ -44,10 +44,14 @@ test("summary failures show the specific translated reason and safe location wit
 });
 
 test("model configuration and connection failures retain the settings action", async () => {
-  for (const code of ["model_not_configured", "model_authentication", "model_connection", "model_timeout", "provider_error"]) {
+  for (const code of ["model_not_configured", "model_authentication", "model_connection", "model_timeout", "provider_error", "invalid_response"]) {
     const api = load("system/backendApi.ts");
     assert.equal(new api.SummaryGenerationError(code).needsSettings, true);
   }
+  const api = load("system/backendApi.ts");
+  const rateLimited = new api.SummaryGenerationError("model_rate_limited");
+  assert.equal(rateLimited.needsSettings, false);
+  assert.match(rateLimited.message, /rate limiting/i);
   const missing = load("system/backendApi.ts", { fetch: async () => ({ ok: false, status: 503 }) });
   await assert.rejects(missing.generateMeetingReport("m"), error => error.code === "model_not_configured");
   const offline = load("system/backendApi.ts", { fetch: async () => { throw new Error("private network error"); } });

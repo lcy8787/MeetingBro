@@ -154,7 +154,7 @@ def test_grounded_numeric_charts_accept_exact_values_and_units(kind):
     assert [d.value for d in result.sections[0].blocks[0].data] == ['12', '6', '9']
 
 
-@pytest.mark.parametrize('mutation', ['number', 'unit', 'label', 'source', 'nonliteral', 'duplicate', 'nan', 'empty', 'order'])
+@pytest.mark.parametrize('mutation', ['number', 'unit', 'label', 'source', 'nonliteral', 'nan', 'empty', 'order'])
 def test_chart_rejects_invented_numbers_units_categories_sources_and_order(mutation):
     candidate = chart('LineChart')
     datum = candidate['data'][0]
@@ -433,3 +433,94 @@ def test_an_unsupported_count_in_a_prose_heading_is_omitted_without_losing_the_b
     assert report.sections[0].blocks[0].text=='家長關心內容、溝通與引導。'
     assert report.design_review[0].code=='unsupported_heading_removed'
     assert report.warnings
+
+
+def test_action_and_decision_lists_are_grounded_by_their_options_without_a_redundant_quote():
+    actions = block('ActionItems', text='Assigned work.', options=[
+        dict(label='Review', text='Alice will review Plan.', source_segment_ids=['s'])])
+    decisions = block('DecisionPanel', text='Agreed decision.', options=[
+        dict(label='Launch', text='We agree to Launch.', source_segment_ids=['s'])])
+    result = generate(doc(actions, decisions))
+    assert result.sections[0].blocks[0].type == 'ActionItems'
+    assert result.sections[0].blocks[1].type == 'DecisionPanel'
+    # A supplied block-level quote is still checked verbatim.
+    broken = block('ActionItems', text='Assigned work.', evidence_quote='We agree to Wait.', options=[
+        dict(label='Review', text='Alice will review Plan.', source_segment_ids=['s'])])
+    with pytest.raises(ReportGenerationError):
+        generate(doc(broken))
+    # A single decision statement without options still needs exact support.
+    paraphrase = block('DecisionPanel', text='The team decided to ship immediately.')
+    with pytest.raises(ReportGenerationError):
+        generate(doc(paraphrase))
+
+
+def test_output_truncation_gets_one_bounded_larger_retry_before_failure():
+    from meetingbro.llm.openai_compatible import LLMResponseError
+    class TruncatingClient:
+        def __init__(self):
+            self.calls = []
+        def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            if len(self.calls) == 1:
+                raise LLMResponseError('output_truncated', 'truncated')
+            return json.dumps(doc())
+    client = TruncatingClient()
+    result = generate_report(transcript(), language='en', client=client)
+    assert result.sections
+    assert len(client.calls) == 2
+    assert client.calls[1]['max_tokens'] > client.calls[0]['max_tokens']
+
+
+def test_invalid_json_never_triggers_a_hidden_paid_retry():
+    class InvalidClient:
+        def __init__(self):
+            self.calls = 0
+        def chat(self, **kwargs):
+            self.calls += 1
+            return '{"sections": ['
+    client = InvalidClient()
+    with pytest.raises(ReportGenerationError) as failure:
+        generate_report(transcript(), language='en', client=client)
+    assert failure.value.code == 'invalid_report_json' and client.calls == 1
+
+
+def test_agent_uses_configured_output_budget_from_the_wrapped_client():
+    class BudgetedClient:
+        max_output_tokens = 11000
+        def __init__(self): self.calls = []
+        def chat(self, **kwargs):
+            self.calls.append(kwargs)
+            return json.dumps(doc())
+    client = BudgetedClient()
+    generate_report(transcript(), language='en', client=client)
+    assert client.calls[0]['max_tokens'] == 11000
+
+
+def test_duplicate_chart_observations_are_removed_losslessly():
+    candidate = chart('DataBars')
+    candidate['data'].append(copy.deepcopy(candidate['data'][0]))
+    result = generate(doc(candidate))
+    block = result.sections[0].blocks[0]
+    assert block.type == 'DataBars'
+    assert len(block.data) == 3
+    assert any(f.code == 'duplicate_observation_removed' and f.repaired for f in result.design_review)
+
+
+def test_one_point_chart_is_degraded_to_a_sourced_metric_card():
+    candidate = chart('DataBars')
+    candidate['data'] = [dict(candidate['data'][0]), dict(candidate['data'][0])]
+    result = generate(doc(candidate))
+    block = result.sections[0].blocks[0]
+    assert block.type == 'KeyMetrics' and block.data == []
+    assert len(block.options) == 1 and block.options[0].source_segment_ids == ['s']
+    assert any(f.code == 'chart_presentation_repaired' and f.repaired for f in result.design_review)
+    assert any('one-point chart' in warning for warning in result.warnings)
+
+
+def test_conflicting_duplicate_chart_values_still_fail_closed():
+    candidate = chart('DataBars')
+    duplicate = copy.deepcopy(candidate['data'][0])
+    duplicate['value'] = '99'
+    candidate['data'].append(duplicate)
+    with pytest.raises(ReportGenerationError):
+        generate(doc(candidate))
