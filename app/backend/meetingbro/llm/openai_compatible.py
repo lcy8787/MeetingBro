@@ -30,41 +30,20 @@ class LLMResponseError(RuntimeError):
 
 
 def extract_json_object(raw: str) -> dict[str, Any]:
-    """Extract one JSON object from provider text, including fenced or prefixed output.
-
-    A truncated object remains a JSON decode error; callers can then report a
-    precise truncation or invalid-JSON diagnosis instead of accepting partial data.
-    """
+    """Read the outer value once. Never reinterpret a child of a broken report."""
     text = (raw or "").lstrip("\ufeff").strip()
-    candidates = [text]
-    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, re.IGNORECASE | re.DOTALL)
-    if fenced:
-        candidates.insert(0, fenced.group(1).strip())
-    last_error: json.JSONDecodeError | None = None
-    for candidate in candidates:
-        try:
-            value = json.loads(candidate)
-        except json.JSONDecodeError as exc:
-            last_error = exc
-            continue
-        if isinstance(value, dict):
-            return value
-        last_error = json.JSONDecodeError("Expected a JSON object", candidate, 0)
-    # Some models prepend a prose sentence before otherwise valid JSON.
-    decoder = json.JSONDecoder()
-    for index, character in enumerate(text):
-        if character != "{":
-            continue
-        try:
-            value, _ = decoder.raw_decode(text[index:])
-        except json.JSONDecodeError as exc:
-            last_error = exc
-            continue
-        if isinstance(value, dict):
-            return value
-    if last_error is not None:
-        raise last_error
-    raise json.JSONDecodeError("No JSON object found", text, 0)
+    start = re.search(r"[\[{]", text)
+    if start is None:
+        raise json.JSONDecodeError("No JSON object found", text, 0)
+    value, end = json.JSONDecoder().raw_decode(text, start.start())
+    if not isinstance(value, dict):
+        raise json.JSONDecodeError("Expected a report object", text, start.start())
+    suffix = text[end:]
+    if suffix.lstrip().startswith(('}', ']')):
+        raise json.JSONDecodeError("Unexpected closing delimiter", text, end)
+    if '{' in suffix or re.search(r"\[\s*\{", suffix):
+        raise LLMResponseError("ambiguous_response", "The answer contains additional JSON outside the report.")
+    return value
 
 
 @lru_cache(maxsize=1)
@@ -241,6 +220,7 @@ class OpenAICompatibleClient:
         max_tokens: int,
         temperature: float = 0.2,
         response_schema: dict[str, Any] | None = None,
+        single_attempt: bool = False,
     ) -> str:
         base_url = self._cfg.base_url.rstrip("/")
         if base_url.endswith("/v1"):
@@ -264,13 +244,20 @@ class OpenAICompatibleClient:
             reasoning = _openrouter_reasoning(self._cfg.model)
             if reasoning is not None:
                 body["reasoning"] = reasoning
-            if expects_json:
+            if expects_json and single_attempt:
+                # The compact report prompt defines each relation's fields. JSON
+                # mode avoids providers pinning every item to the first union arm.
+                body["response_format"] = {"type": "json_object"}
+            elif expects_json:
                 body["response_format"] = {"type": "json_schema", "json_schema": {
                     "name": "meeting_report", "strict": True, "schema": response_schema,
                 }}
                 body["provider"] = {"require_parameters": True}
         elif expects_json:
             body["response_format"] = {"type": "json_object"}
+
+        if single_attempt:
+            return self._post(url, body, expects_json=expects_json)
 
         fallback_used = False
         attempt = 0
@@ -378,6 +365,8 @@ class OpenAICompatibleClient:
         choices = data.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
             raise LLMResponseError("empty_response", "The model provider returned no completed answer.")
+        if expects_json and len(choices) > 1:
+            raise LLMResponseError("ambiguous_response", "The provider returned multiple candidate answers.")
         choice = choices[0]
         finish_reason = choice.get("finish_reason")
         if finish_reason in {"error", "content_filter"}:

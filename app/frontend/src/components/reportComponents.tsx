@@ -86,7 +86,7 @@ export function ReportBlockView({ block, sources }: ContentProps) {
   const [done, setDone] = useState(false);
   const kind = ALIASES[block.type] ?? block.type;
   const normalized = { ...block, type: kind as ReportBlock["type"] };
-  const Component = COMPONENT_REGISTRY[kind] ?? Choices;
+  const Component = block.type === "PerspectiveCards" ? Items : COMPONENT_REGISTRY[kind] ?? Choices;
   const visual = !!(block.data?.length || block.nodes?.length || block.cells?.length);
   const full = ["paragraph", "quote", "step", "timeline", "table", "conclusion", "comparison", "pros_cons", "hero", "heading", "decision"].includes(kind)
     || block.text.length + block.detail.length > 200 || !!block.options?.length || visual;

@@ -1,4 +1,8 @@
 {
+  "Summary version": "摘要版本",
+  "Partial summary": "部分摘要",
+  "The model returned multiple JSON answers. Generate the summary again.": "模型回傳多份 JSON 回答，請重新產生摘要。",
+  "The model service rejected the summary response format.": "模型服務不支援這個摘要回答格式。",
   "Open file location": "開啟文件位置",
   "Copy path": "複製路徑",
   "Path copied": "已複製路徑",

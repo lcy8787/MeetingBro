@@ -311,7 +311,7 @@ def export_meeting(
             # Manual/automatic interactive reports are the summary source when
             # the legacy snapshot pipeline is disabled.
             doc = latest_report.document
-            lines = [f'# {doc.title}', doc.executive_summary]
+            lines = [f'# {doc.title}', doc.executive_summary, *doc.warnings]
             lines.extend(block.text for block in doc.takeaways)
             for section in doc.sections:
                 lines.append(f'## {section.title}')

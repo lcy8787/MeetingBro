@@ -89,7 +89,7 @@ def test_invalid_reports_never_trigger_hidden_paid_repairs():
     doc = generate_report([segment('2026年開始')], language='zh', client=client)
     assert len(client.calls) == 1 and doc.generation_method == 'llm'
     assert doc.sections[0].title == '2026年' and doc.sections[0].layout_type == 'timeline'
-    assert client.calls[0]['response_schema']['properties']['sections']['items']['properties']['blocks']['maxItems'] == 8
+    assert client.calls[0]['response_schema']['properties']['sections']['items']['properties']['items']['maxItems'] == 8
     invalid = json.dumps({'blocks': [{'type': 'timeline', 'title': '2027年', 'text': '2027年開始', 'source_segment_ids': ['s']}]}, ensure_ascii=False)
     for payload in (invalid, 'not JSON', ''):
         client = Client(payload)

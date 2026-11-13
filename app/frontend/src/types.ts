@@ -88,6 +88,8 @@ export interface ReportSection {
 }
 
 export interface ReportDocument {
+  coverage?: "complete" | "partial";
+  missing_parts?: { part: number; start_time: number; end_time: number; reason: string }[];
   title: string;
   executive_summary: string;
   executive_summary_source_segment_ids: string[];

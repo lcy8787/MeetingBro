@@ -112,6 +112,8 @@ const SUMMARY_ERRORS: Record<string, string> = {
   model_rate_limited: "The summary model is rate limiting requests. Wait a moment, then retry.",
   provider_error: "The summary model service returned an error. Check the service and try again.",
   model_timeout: "The summary model request timed out. Please try again or check the model service.",
+  ambiguous_response: "The model returned multiple JSON answers. Generate the summary again.",
+  structured_output_unsupported: "The model service rejected the summary response format.",
   invalid_response: "The summary model service returned an unreadable response. Check the base URL and model ID.",
   output_truncated: "The model reached its output limit before finishing. No summary was published; automatic summaries are off.",
   empty_response: "The model returned no final answer. No summary was published; automatic summaries are off.",

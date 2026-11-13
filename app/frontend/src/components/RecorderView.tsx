@@ -74,7 +74,7 @@ function newestReport(reports: ReportRevision[]) {
 function reportText(report: ReportRevision) {
   const { document: doc } = report;
   const blocks = (items: typeof doc.takeaways) => items.map(blockText);
-  return [doc.title, doc.executive_summary, ...blocks(doc.takeaways),
+  return [doc.title, doc.executive_summary, ...doc.warnings, ...blocks(doc.takeaways),
     ...doc.sections.flatMap(section => [section.title, ...blocks(section.blocks)])].filter(Boolean).join("\n\n");
 }
 
@@ -226,10 +226,16 @@ export function RecorderView(props: RecorderProps) {
   const item = history.list?.find(row => row.id === viewedId);
   const previousJob = savedId ? detail?.job : props.finalJob;
   const generatedReport = viewedId ? generation.reports[viewedId] : null;
-  const report = newestReport([
+  const latestReport = newestReport([
     ...(savedId ? detail?.reports ?? [] : props.report ? [props.report] : []),
     ...(generatedReport ? [generatedReport] : []),
   ]);
+  const [selectedVersion, setSelectedVersion] = useState("");
+  const versionKey = (r: ReportRevision) => JSON.stringify([r.meeting_id, r.report_id, r.revision]);
+  const savedVersions = (detail?.reports ?? []).filter(r => savedId && r.meeting_id === savedId
+    && r.report_type === "meeting" && r.document.generation_method === "llm");
+  const report = savedVersions.find(r => versionKey(r) === selectedVersion) ?? latestReport;
+  useEffect(() => setSelectedVersion(""), [viewedId, latestReport?.created_at]);
   const viewedTitle = (report?.report_type === "meeting" ? report.document.title : "") || item?.title;
   const job = previousJob?.status === "failed" && report && report.created_at > previousJob.updated_at ? null : previousJob;
   useEffect(() => {
@@ -400,7 +406,14 @@ export function RecorderView(props: RecorderProps) {
               retry={() => savedId ? void run(async () => { await retryFinalSummaryJob(savedId); history.refreshDetail(); }) : void generateSummary()} />}
             {generation.error && generation.errorMeetingId === viewedId && report &&
               <p className="mb-status" role="status">{t("Showing the last successful report. The latest generation attempt failed.")}</p>}
-            {report && <ReportView key={`${report.meeting_id}-${report.report_id}`} report={report} transcript={transcript} />}
+            {savedVersions.length > 1 && report && <label>{t("Summary version")}{" "}
+              <select value={versionKey(report)} onChange={event => setSelectedVersion(event.target.value)}>
+                {savedVersions.slice().reverse().map(r => <option key={versionKey(r)} value={versionKey(r)}>
+                  {dateLabel(r.created_at)} · {t("Revision {0}", r.revision)}{r.document.coverage === "partial" ? " · " + t("Partial summary") : ""}
+                </option>)}
+              </select>
+            </label>}
+            {report && <ReportView key={versionKey(report)} report={report} transcript={transcript} />}
             {!report && summary && <section className="mb-summary"><h2>{viewedTitle || t("Summary")}</h2><p>{summary.content}</p></section>}
             {!report && !summary && !history.detailError && <p className="mb-status">{t("No model-generated summary yet. Use Generate summary or enable automatic summaries.")}</p>}
 

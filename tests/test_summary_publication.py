@@ -107,7 +107,7 @@ def test_unconfigured_or_failed_model_never_returns_extractive_content(monkeypat
     assert summarizer.last_error == 'offline'
 
 
-def test_one_failed_chunk_rejects_the_entire_report():
+def test_failed_chunks_keep_valid_content_and_record_gaps():
     class Client:
         calls = 0
         def chat(self, **kwargs):
@@ -117,8 +117,11 @@ def test_one_failed_chunk_rejects_the_entire_report():
             raise RuntimeError('offline')
     segments = [TranscriptSegment(id='s', meeting_id='m', start_time=0, end_time=1,
         text='a' * 17000, original_language='en', confidence=1, created_at=datetime.now(timezone.utc))]
-    with pytest.raises(ReportGenerationError, match='Part 2'):
-        generate_report(segments, language='en', client=Client())
+    client = Client()
+    doc = generate_report(segments, language='en', client=client)
+    assert doc.coverage == 'partial' and client.calls == 3
+    assert [p.part for p in doc.missing_parts] == [2, 3]
+    assert doc.sections[0].blocks[0].text == 'Launch discussed.'
 
 
 def test_duplicate_paid_requests_are_rejected_and_failure_persists_nothing(tmp_path, monkeypatch):

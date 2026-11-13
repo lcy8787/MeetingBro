@@ -74,8 +74,15 @@ def test_all_new_surfaces_reject_unsupported_evidence(case):
     if case == 'empty_table': table['rows'] = []
     if case == 'option_number': payload['sections'][0]['blocks'][1]['options'][0]['text'] = '五十元'
     client = Client(payload)
-    with pytest.raises(ReportGenerationError): generate_report(transcript, language='zh', client=client)
-    assert len(client.calls) == 1
+    result = generate_report(transcript, language='zh', client=client)
+    assert result.warnings and len(client.calls) == 1
+    if case == 'summary_source':
+        assert result.executive_summary != payload['executive_summary']
+        assert 'missing' not in result.executive_summary_source_segment_ids
+    else:
+        rejected = payload['sections'][0]['blocks'][1 if case == 'option_number' else 2]
+        assert all(b.type != rejected['type'] for b in result.sections[0].blocks)
+        assert result.sections[1].blocks
 
 
 def test_unsupported_executive_summary_sentence_is_omitted_with_a_visible_warning():

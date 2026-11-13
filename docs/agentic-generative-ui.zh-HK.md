@@ -1,6 +1,6 @@
 # Agentic Generative UI
 
-現有 `generate_report()` 現在交由 Visual Design Agent 編排。模型 API、報告生成入口、版本儲存、逐字稿及深色主題維持原有流程；本次不涉及 PDF。
+`generate_report()` 每批向模型請求一次帶來源的內容關係。`reports/relations.py` 定義精簡提示詞及內容格式，本機依關係選擇元件、驗證證據並產生版面。舊版區塊 JSON 及已儲存的報告仍可讀取。
 
 ## 元件與資料契約
 
@@ -38,21 +38,11 @@
 
 以上例子省略了本地資料模型的預設欄位；傳送至支援 strict schema 的模型時，由完整 JSON Schema 要求所有欄位。
 
-## Agent 工具循環
+## 每批一次與部分摘要
 
-沿用現有 `client.chat(system, user, response_schema)`，以 `tool_request` 表達受控工具呼叫，不更改供應商 API 或要求原生 function calling：
+逐字稿按既有字數上限分批。模型回傳明確立場、事件、流程、條件、待辦或量測值，應用程式負責轉成可閱讀的元件。一般摘要使用 JSON object 模式，每批只發送一次 completion POST。請求逾時、格式不支援或輸出截斷會結束該批。
 
-| 工具 | 用途 |
-| --- | --- |
-| `list_components` | 按 `query` 查詢元件與資料欄位 |
-| `compose_layout` | 為候選報告補上佈局並驗證引用 |
-| `validate_structure` | 驗證 JSON、資料型態、引用、數值和視覺化證據 |
-| `review_design` | 審查及修正安全可修的版面問題 |
-| `revise_section` | 以單一替代章節修改最後有效候選報告的 `section_index` |
-
-工具參數固定為 `{name, query, section_index}`；工具結果會連同原始逐字稿供下一回合使用，不累積無界限歷史。每個逐字稿批次最多 5 次模型回合，只有模型明確請求工具才會追加呼叫。最後須輸出完整報告及 `tool_request: null`。最終輸出無效會失敗，不隱藏付費重試，也不把來源逐字稿冒充生成報告。
-
-Design Review 會檢查重複卡片／文字、巢狀深度、資訊密度、狹窄的密集區塊、圖表適用性及過多主要強調。可安全修正的寬度、過深佈局與強調層級會直接修正；需語義判斷的項目供 Agent 修改。結果保存在 `document.design_review`。
+程式逐項核對引用。元件格式或來源有誤時，仍可儲存其餘通過驗證的項目，並顯示受影響的章節。整批失敗時繼續處理後續批次。`coverage=partial` 與 `missing_parts` 記錄失敗批次、起訖秒數及錯誤代碼。時間以涉及的逐字稿片段為準。桌面、HTML 與報告文字顯示缺漏，所有批次都失敗時保留上次儲存的版本。
 
 ## 來源及安全邊界
 
@@ -65,11 +55,11 @@ JSON 額外欄位、任意樣式、事件處理器、HTML 執行節點及未知 
 ## 驗證
 
 ```sh
-PYTHONPATH=app/backend app/backend/.venv/bin/python -m pytest tests/test_agentic_reports.py tests/test_report_generation.py tests/test_semantic_reports.py tests/test_report_storage.py tests/test_standalone_report_interactions.py -q
+PYTHONPATH=app/backend app/backend/.venv/bin/python -m pytest tests/test_relation_reports.py tests/test_agentic_reports.py tests/test_report_generation.py tests/test_semantic_reports.py tests/test_report_storage.py tests/test_standalone_report_interactions.py -q
 npm --prefix app/frontend run build
 ```
 
-新增測試包含工具預算、查詢／編排／審查／替換章節、DSL 及程式碼注入防護、圖表與圖譜證據、講者錯配、跨會議引用、HTML escape 和完整複製內容。瀏覽器檢查使用清楚標示的合成逐字稿 fixture，不改動實際會議資料。
+測試涵蓋單次 HTTP 請求、逐項來源驗證、截斷或多份回答、部分摘要儲存與離線 HTML 匯出。
 
 ## 長錄音生成修復
 
@@ -79,6 +69,6 @@ npm --prefix app/frontend run build
 
 一般敘述若混有引用無法支持的數值，會略去含該數值的整句；數值不受支持的敘述標題亦會略去。其餘文字必須重新通過來源驗證，並在 `design_review` 及可見提示留下記錄。不補寫替代數字或猜測其他來源，也不把無效圖表、決策或引文靜默改成有效資料。整個區塊沒有可保留的有效正文時，仍會失敗。
 
-`generate_report(..., max_model_calls=3)` 可設定整次生成的呼叫預算。系統先為後續逐字稿批次各保留一次呼叫，再提供可用的工具回合；只剩一次的批次會透過 Schema 要求直接發布。預算不足以覆蓋所有批次時，在呼叫模型前便拒絕執行。
+`max_model_calls` 可在請求前確認預算足以涵蓋所有批次。
 
 這次驗證以受影響的實際長錄音進行，限定總共三次 OpenRouter 請求。後續修正、完整生成驗證及產生摘要端點測試均重播已保存的回應，沒有額外模型呼叫；完整端點回傳 200，並成功儲存摘要版本及在桌面程式顯示。

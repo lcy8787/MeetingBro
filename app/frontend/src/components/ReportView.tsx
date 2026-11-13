@@ -35,7 +35,7 @@ export function ReportView({ report, transcript }: Props) {
       <div className="report-meta">{t("Generated from transcript")} · {new Date(report.created_at).toLocaleString()}</div>
       {doc.warnings.map((warning, i) => <p className="report-warning" role="status" key={i}>{t(warning)}</p>)}
       <div className="report-controls">
-        <button type="button" onClick={() => void copy([doc.title, doc.executive_summary, ...doc.takeaways.map(blockText), ...doc.sections.map((_, i) => sectionText(i))].filter(Boolean).join("\n\n"))}>{t("Copy report")}</button>
+        <button type="button" onClick={() => void copy([doc.title, doc.executive_summary, ...doc.warnings, ...doc.takeaways.map(blockText), ...doc.sections.map((_, i) => sectionText(i))].filter(Boolean).join("\n\n"))}>{t("Copy report")}</button>
         <span role="status" aria-live="polite">{message}</span>
       </div>
       {doc.takeaways.length > 0 && <div className="report-grid">{doc.takeaways.map((block, i) => <Block key={`${report.revision}-takeaway-${i}`} block={block} sources={sources} />)}</div>}

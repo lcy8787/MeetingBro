@@ -154,7 +154,7 @@ def _block(block: ReportBlock, sources: dict[str, TranscriptSegment], uid='block
     elif kind == 'action' and block.options:
         content = '<ul class="report-action-list">' + ''.join(f'<li><label class="action report-action"><input type="checkbox"><span><strong>{escape(o.label)}</strong> {escape(o.text)}</span></label>{_evidence(o.source_segment_ids, sources)}</li>' for o in block.options) + '</ul>'
     elif block.options:
-        content = _items(block, sources) if kind in {'timeline', 'step', 'pros_cons', 'statistic', 'questions', 'decision', 'reference'} or kind == 'comparison' and len(block.options) <= 3 else _choices(block, sources)
+        content = _items(block, sources) if kind in {'timeline', 'step', 'pros_cons', 'statistic', 'questions', 'decision', 'reference'} or block.type == 'PerspectiveCards' or kind == 'comparison' and len(block.options) <= 3 else _choices(block, sources)
     full = kind in {'paragraph', 'quote', 'step', 'timeline', 'table', 'conclusion', 'comparison', 'pros_cons', 'hero', 'heading', 'decision'} or len(block.text + block.detail) > 200 or bool(block.options) or bool(block.data or block.nodes or block.cells)
     width = ' wide' if full else ''
     return f'<article class="block {kind}{width} report-block report-block--{kind}">{title}{text}{content}{detail}{_evidence(block.source_segment_ids, sources)}</article>'
@@ -201,7 +201,7 @@ def write_standalone_report(path: Path, report: ReportRevision, transcript: Sequ
     takeaways = ''.join(_block(block, sources, f'takeaway-{i}') for i, block in enumerate(doc.takeaways))
     warnings = ''.join(f'<p class="warning">{escape(w)}</p>' for w in doc.warnings)
     copies = ''.join(f'<template id="copy-{i}">{escape(text)}</template>' for i, text in enumerate(copy_sections, 1))
-    full_copy = '\n\n'.join(filter(None, [doc.title, doc.executive_summary, *(_block_text(block) for block in doc.takeaways), *copy_sections]))
+    full_copy = '\n\n'.join(filter(None, [doc.title, doc.executive_summary, *doc.warnings, *(_block_text(block) for block in doc.takeaways), *copy_sections]))
     copies += f'<template id="copy-full">{escape(full_copy)}</template>'
     script_hash = base64.b64encode(hashlib.sha256(_SCRIPT.encode('utf-8')).digest()).decode('ascii')
     html = f'''<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">

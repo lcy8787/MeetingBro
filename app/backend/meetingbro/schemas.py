@@ -153,7 +153,16 @@ class DesignFinding(ReportDataModel):
     repaired: bool = False
 
 
+class MissingReportPart(ReportDataModel):
+    part: int = Field(ge=1)
+    start_time: float
+    end_time: float
+    reason: str
+
+
 class ReportDocument(ReportDataModel):
+    coverage: Literal["complete", "partial"] = "complete"
+    missing_parts: list[MissingReportPart] = Field(default_factory=list)
     title: str = ""
     executive_summary: str = ""
     executive_summary_source_segment_ids: list[str] = Field(default_factory=list)

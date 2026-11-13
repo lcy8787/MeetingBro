@@ -34,6 +34,7 @@ export function useSummaryGeneration(meetingId: string | null, running: boolean,
     try {
       const report = await generateMeetingReport(id);
       if (report.meeting_id !== id || report.document.generation_method !== "llm") throw new Error("The model did not produce a summary.");
+      if (report.document.coverage === "partial") setAutomatic(false);
       setReports(current => ({ ...current, [id]: report }));
       if (source.meetingId === id) processed.current.set(id, source.fingerprint);
       return report;

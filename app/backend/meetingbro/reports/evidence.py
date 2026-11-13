@@ -43,6 +43,29 @@ def exact_quote(quote, ids, sources):
     raise ReportValidationError('Evidence quote must occur verbatim in a cited segment', code='invalid_report_evidence')
 
 
+def anchored_quote_ids(quote, ids, sources, speakers):
+    """Extend a known citation only when its exact excerpt crosses an ASR boundary."""
+    try:
+        exact_quote(quote, ids, sources)
+        return ids
+    except ReportValidationError:
+        if len(ids) != 1 or ids[0] not in sources:
+            raise
+        anchor = ids[0]
+        ordered = list(sources)
+        position = ordered.index(anchor)
+        needle = _quote_key(quote)
+        for other in (position - 1, position + 1):
+            if not 0 <= other < len(ordered) or speakers[ordered[other]] != speakers[anchor]:
+                continue
+            pair = [ordered[n] for n in sorted([other, position])]
+            left, right = (_quote_key(sources[k]) for k in pair)
+            start = (left + right).find(needle)
+            if start >= 0 and start < len(left) < start + len(needle):
+                return pair
+        raise
+
+
 _CJK = re.compile(r'[\u3400-\u9fff]')
 
 

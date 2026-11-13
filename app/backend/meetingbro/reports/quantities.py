@@ -137,6 +137,10 @@ def number_tokens(text, *, source=False):
         chinese.add(('percent',_decimal(value) if re.match(r'[-+−]?\d',value) else _chinese(value)))
         return ' ' * len(match.group())
     masked = _CN_PERCENT.sub(percent,masked)
+    def tenths(match):
+        chinese.add(('tenths', _chinese(match.group(1))))
+        return ' ' * len(match.group())
+    masked = re.sub(r'([一二兩两三四五六七八九十])成(?!為|为|員|员|本|效|績|绩|功|長|长|分)', tenths, masked)
     def scaled(match):
         coefficient = _decimal(match.group(1))
         if not isinstance(coefficient, Decimal):

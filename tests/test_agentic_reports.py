@@ -78,37 +78,12 @@ def test_registry_covers_all_requested_components_and_strict_plain_data():
     assert set(names) <= {name for schema in variants for name in schema['properties']['type']['enum']}
 
 
-def test_design_tools_query_compose_review_revise_then_publish():
-    initial = doc(block('SummaryCard'), chart())
-    replacement = doc(block('ConclusionPanel', text='We agree to Launch.'))
-    revised = copy.deepcopy(initial)
-    revised['sections'][0] = replacement['sections'][0]
-    client = Client(tool('list_components', query='chart'), tool('compose_layout', initial), tool('review_design'),
-                    tool('revise_section', replacement), revised)
-    result = generate_report(transcript(), language='en', client=client)
-    assert len(client.calls) == 5
-    contexts = [json.loads(c['user']) for c in client.calls]
-    assert any(item['name'] == 'BarChart' and item['payload'] == 'data' for item in contexts[1]['tool_result']['result'])
-    assert contexts[2]['tool_result']['result']['candidate']['sections'][0]['layout']['op'] == 'grid'
-    assert contexts[4]['tool_result']['result']['valid']
-    assert result.sections[0].blocks[0].type == 'ConclusionPanel'
-    assert result.sections[0].layout.children[0].emphasis == 'strong'
-
-
-def test_invalid_tool_candidate_returns_feedback_without_committing_then_allows_correction():
-    invalid = doc(chart()); invalid['sections'][0]['blocks'][0]['data'][0]['value'] = '99'
-    client = Client(tool('validate_structure', invalid), tool('revise_section', doc()), doc())
-    result = generate_report(transcript(), language='en', client=client)
-    assert result.sections
-    assert not json.loads(client.calls[1]['user'])['tool_result']['result']['valid']
-    assert 'existing candidate' in json.loads(client.calls[2]['user'])['tool_result']['result']['error']
-
-
-def test_tool_loop_is_bounded_and_unknown_tools_fail_closed():
-    client = Client(*(tool('list_components') for _ in range(5)))
-    with pytest.raises(ReportGenerationError): generate_report(transcript(), language='en', client=client)
-    assert len(client.calls) == 5
-    with pytest.raises(ReportGenerationError): generate(tool('execute_javascript'))
+@pytest.mark.parametrize('name', ['list_components', 'validate_structure', 'execute_javascript'])
+def test_tool_requests_end_the_part_without_another_call(name):
+    client = Client(tool(name), doc())
+    with pytest.raises(ReportGenerationError):
+        generate_report(transcript(), language='en', client=client)
+    assert len(client.calls) == 1
 
 
 @pytest.mark.parametrize('mutation', ['missing', 'duplicate', 'unknown_op', 'extra_css', 'deep', 'nested_interaction'])
@@ -313,10 +288,8 @@ def test_model_schema_only_allows_real_metadata_speaker_ids(speaker):
     client=Client(doc())
     generate_report(segments,language='en',client=client)
     call=client.calls[0]
-    variants=call['response_schema']['properties']['sections']['items']['properties']['blocks']['items']['anyOf']
-    assert all(schema['properties']['speaker_id']['enum']==(['','Alice'] if speaker else ['']) for schema in variants)
-    assert json.loads(call['user'])['allowed_speaker_ids']==(['Alice'] if speaker else [])
-    assert 'metadata identifier' in call['system']
+    assert 'speaker_id' not in json.dumps(call['response_schema'])
+    assert json.loads(call['user'])['transcript'][0]['speaker_id'] == speaker
 
 
 def test_speaker_schema_is_request_local_and_never_leaks_another_meetings_ids():
@@ -329,13 +302,10 @@ def test_speaker_schema_is_request_local_and_never_leaks_another_meetings_ids():
     assert 'enum' not in speaker(REPORT_SCHEMA)
 
 
-def test_tool_validation_catches_invalid_speaker_before_publish_and_allows_revision():
-    invalid=doc(block(speaker_id='Bob'))
-    client=Client(tool('validate_structure',invalid),doc())
-    result=generate_report(transcript(),language='en',client=client)
-    feedback=json.loads(client.calls[1]['user'])['tool_result']['result']
-    assert feedback['valid'] is False and 'speaker ID' in feedback['error']
-    assert result.sections[0].blocks[0].speaker_id==''
+def test_unidentified_speaker_does_not_prevent_publishing_independent_content():
+    result = generate(doc(block(speaker_id='Bob'), block('ConclusionPanel')))
+    assert [b.type for b in result.sections[0].blocks] == ['ConclusionPanel']
+    assert result.warnings
 
 
 def test_speaker_failures_have_a_diagnostic_code_without_weakening_validation():
@@ -380,9 +350,10 @@ def test_accepting_longer_reports_does_not_bypass_per_block_provenance_or_sectio
     payload['sections']=[dict(id=topic,title=topic,layout_type='text',blocks=[block(text=f'Observation {i}.') for i in range(start,start+8)]) for topic,start in [('Overview',0),('Discussion',8)]]
     missing=copy.deepcopy(payload);missing['sections'][1]['blocks'][5]['source_segment_ids']=[]
     over=copy.deepcopy(payload);over['sections'][0]['blocks'].append(block(text='Observation 0.'))
-    for invalid in [missing,over]:
-        with pytest.raises(ReportGenerationError):
-            generate_report(segments,language='en',client=Client(invalid))
+    for invalid, count in [(missing, 15), (over, 8)]:
+        result = generate_report(segments, language='en', client=Client(invalid))
+        assert sum(len(section.blocks) for section in result.sections) == count
+        assert result.warnings
 
 
 def test_three_call_budget_reserves_a_completion_for_each_transcript_part():
@@ -395,7 +366,7 @@ def test_three_call_budget_reserves_a_completion_for_each_transcript_part():
     client=Client(*(part(key) for key in ['a','b','c']))
     result=generate_report(segments,language='en',client=client,max_model_calls=3)
     assert len(client.calls)==3 and result.sections
-    assert all(call['response_schema']['properties']['tool_request']=={'type':'null'} for call in client.calls)
+    assert all(call['single_attempt'] and 'tool_request' not in call['response_schema']['properties'] for call in client.calls)
 
 
 def test_insufficient_generation_budget_fails_before_any_model_call():
@@ -454,7 +425,7 @@ def test_action_and_decision_lists_are_grounded_by_their_options_without_a_redun
         generate(doc(paraphrase))
 
 
-def test_output_truncation_gets_one_bounded_larger_retry_before_failure():
+def test_output_truncation_ends_the_part_without_retry():
     from meetingbro.llm.openai_compatible import LLMResponseError
     class TruncatingClient:
         def __init__(self):
@@ -465,10 +436,10 @@ def test_output_truncation_gets_one_bounded_larger_retry_before_failure():
                 raise LLMResponseError('output_truncated', 'truncated')
             return json.dumps(doc())
     client = TruncatingClient()
-    result = generate_report(transcript(), language='en', client=client)
-    assert result.sections
-    assert len(client.calls) == 2
-    assert client.calls[1]['max_tokens'] > client.calls[0]['max_tokens']
+    with pytest.raises(ReportGenerationError) as failure:
+        generate_report(transcript(), language='en', client=client)
+    assert failure.value.code == 'output_truncated'
+    assert len(client.calls) == 1
 
 
 def test_invalid_json_never_triggers_a_hidden_paid_retry():
