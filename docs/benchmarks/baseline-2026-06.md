@@ -1,7 +1,7 @@
-# MeetingBro ASR 基线报告 (baseline)
+# MeetingBro ASR 基線報告 (baseline)
 
-> 由 `scripts/benchmark_accuracy.py` 生成。仅正式通道(formal Whisper),已禁用预览(preview)与摘要,
-> 确保结果可复现。后续优化 issue (#2-#9) 须引用此基线给出前/后对比。
+> 由 `scripts/benchmark_accuracy.py` 生成。僅正式通道(formal Whisper),已禁用預覽(preview)與摘要,
+> 確保結果可重現。後續優化 issue (#2-#9) 須引用此基線給出前/後對比。
 
 ## 配置
 
@@ -11,7 +11,7 @@
 - manifest: `data\benchmark\manifest.json`
 - label: baseline small/cpu/int8 (balanced profile)
 
-## 准确率 (WER / CER)
+## 準確率 (WER / CER)
 
 | fixture | lang | metric | error_rate | kw recall | vocab | asr_rtf | dur (s) | seg |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -23,7 +23,7 @@
 | de_de | de | wer | 0.000 | — | off | 0.22 | 6.7 | 2 |
 | mixed_codeswitch | mixed | wer | 0.786 | — | off | 0.49 | 6.2 | 4 |
 
-### 按语言聚合
+### 按語言聚合
 
 | lang | metric | mean | n |
 | --- | --- | --- | --- |
@@ -32,27 +32,27 @@
 | mixed | wer | 0.786 | 1 |
 | zh | cer | 0.625 | 3 |
 
-## 端到端字幕延迟 (formal lane)
+## 端到端字幕延遲 (formal lane)
 
-源文件: `sample_en.wav` (循环铺到 ≥60s),实时回放。延迟 = 音频结束 → 字幕发出。
+源文件: `sample_en.wav` (循環鋪到 ≥60s),即時回放。延遲 = 音訊結束 → 字幕發出。
 
 | p50 (s) | p95 (s) | max (s) | segments | asr_rtf |
 | --- | --- | --- | --- | --- |
 | 8.04 | 13.81 | 16.24 | 10 | 0.36 |
 
-## 结果解读 (重要)
+## 結果解讀 (重要)
 
-- **这些 fixture 是对抗性压力样本**(背景噪声 / 配乐说唱 / 歌唱 / 绕口令 / 多语 code-switch),
-  **不代表干净会议语音**。绝对错误率偏高是预期的;唯一的干净样本 `de_de` (WER 0.14) 才是
-  干净语音的现实参考。本基线的价值在于**相对比较**(优化前/后),而非绝对达标线。
-- 离线评分关闭了音频输入队列上限(`audio_input_queue_max_seconds`),否则非实时回放会冲垮 8s
-  队列、丢掉长片段的开头,污染准确率。生产实时路径不受影响。
-- 正式通道字幕延迟为多秒级:连续无停顿语音会让 pre-VAD 把片段攒到上限才发出。**亚秒级**
-  实时字幕由预览(preview)通道提供,需单独度量(见 #6/#13)。`sample_en.wav` 为循环铺长。
+- **這些 fixture 是對抗性壓力樣本**(背景噪音 / 配樂說唱 / 歌唱 / 繞口令 / 多語 code-switch),
+  **不代表乾淨會議語音**。絕對錯誤率偏高是預期的;唯一的乾淨樣本 `de_de` (WER 0.14) 才是
+  乾淨語音的現實參考。本基線的價值在於**相對比較**(優化前/後),而非絕對達標線。
+- 離線評分關閉了音訊輸入隊列上限(`audio_input_queue_max_seconds`),否則非即時回放會衝垮 8s
+  隊列、丟掉長片段的開頭,污染準確率。生產即時路徑不受影響。
+- 正式通道字幕延遲為多秒級:連續無停頓語音會讓 pre-VAD 把片段累積到上限才發出。**亞秒級**
+  即時字幕由預覽(preview)通道提供,需單獨度量(見 #6/#13)。`sample_en.wav` 為循環鋪長。
 
-## 说明
+## 說明
 
-- WER 用于 Latin 语言(en/de + code-switch),CER 用于 CJK(zh);见 `scripts/asr_metrics.py`。
-- 此基线为**正式通道**质量;预览(preview)延迟与质量另行度量(见 #6/#13)。
-- ground truth 提交于 `data/benchmark/manifest.json`;音频随 Qwen3 模型下载,gitignored。
-- 复现: `python scripts/benchmark_accuracy.py`(MeetingBro conda 环境)。
+- WER 用於 Latin 語言(en/de + code-switch),CER 用於 CJK(zh);見 `scripts/asr_metrics.py`。
+- 此基線為**正式通道**質量;預覽(preview)延遲與質量另行度量(見 #6/#13)。
+- ground truth 提交於 `data/benchmark/manifest.json`;音訊隨 Qwen3 模型下載,gitignored。
+- 重現: `python scripts/benchmark_accuracy.py`(MeetingBro conda 環境)。

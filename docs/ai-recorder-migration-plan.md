@@ -90,7 +90,7 @@ flowchart TD
 | 階段 | 工作及驗證 |
 |---|---|
 | 1 調查 | 核對呼叫鏈、模型、現有設定、資料路徑和已修改工作樹；交付本文。 |
-| 2 Qwen3 整合 | 驗證 MLX 套件／授權及量化模型；新增 adapter、選擇與回退；使用 mock 測生命周期及現有 Whisper 回歸，再於 Apple Silicon 實測載入和記憶體。 |
+| 2 Qwen3 整合 | 驗證 MLX 套件／授權及量化模型；新增 adapter、選擇與回退；使用 mock 測生命週期及現有 Whisper 回歸，再於 Apple Silicon 實測載入和記憶體。 |
 | 3 字幕管線 | 穩定 ID/revision、去重、停止尾段、pause/resume、重連和積壓；以受控音訊及亂序事件測試，確認 Qwen formal 不受 Whisper 覆蓋。 |
 | 4 Ollama 摘要 | 沿用 snapshot、memory 和事件；測連線、模型選擇、斷線 fallback、final job 和完整逐字稿分層。 |
 | 5 結構化 schema | 驗證不完整或惡意 JSON、來源引用、無證據數字與舊資料升級；新增 revision migration 測試。 |

@@ -21,11 +21,11 @@ The Electron window will open automatically.
 
 ---
 
-# 启动 MeetingBro
+# 啟動 MeetingBro
 
-**先开后端，再开前端。**
+**先開後端，再開前端。**
 
-## 后端
+## 後端
 
 ```bash
 conda activate MeetingBro
@@ -33,11 +33,11 @@ cd app/backend
 meetingbro-backend
 ```
 
-## 前端（新终端）
+## 前端（新終端機）
 
 ```bash
 cd app/frontend
 npm run dev
 ```
 
-Electron 窗口会自动弹出。
+Electron 視窗會自動彈出。

@@ -213,6 +213,43 @@ Language choice is separate:
 | **Node.js** | 18 or later | [nodejs.org](https://nodejs.org/) |
 | **Git** | any | [git-scm.com](https://git-scm.com/) |
 
+### Local model recommendations and minimum configuration
+
+MeetingBro can run entirely on your machine: **Qwen3-ASR** for speech recognition and **Ollama** (or another local OpenAI-compatible server) for summaries. The values below are practical starting points, not hard guarantees. Long meetings, larger models, and running ASR and the summary model at the same time require more memory.
+
+| | Minimum | Recommended | Comfortable |
+|---|---|---|---|
+| **System RAM** | 8 GB | 16 GB | 32 GB |
+| **CPU** | 4 modern cores | 8 cores, or Apple Silicon M1 or newer | Apple Silicon M2 Pro/M3/M4, or 8+ core CPU |
+| **GPU** | Not required | Apple Silicon GPU / Metal | Apple Silicon GPU, or NVIDIA GPU with 8 GB+ VRAM |
+| **Free disk** | 10 GB | 20 GB | 30 GB+ |
+| **Speech model** | Qwen3-ASR 0.6B | Qwen3-ASR 0.6B or 1.7B | Qwen3-ASR 1.7B |
+| **Local summary model** | 3B–4B quantized (e.g. `qwen2.5:3b`) | 7B–8B Q4 (e.g. `qwen2.5:7b`, `llama3.1:8b`) | 8B–14B Q4 |
+| **Runtime mode** | `Summary only` or `Balanced` | `Balanced` | `Performance` |
+
+**Approximate model sizes:** Qwen3-ASR 0.6B ≈ 538 MB, Qwen3-ASR 1.7B ≈ 1.2 GB, Cantonese GGUF 1.7B Q4_K_M ≈ 1.46 GB. Local LLM downloads vary (a 3B Q4 model is typically 2 GB, and a 7B/8B Q4 model is typically 4–5 GB).
+
+**Practical guidance:**
+
+- **8 GB RAM:** use Qwen3-ASR 0.6B and a 3B local LLM. Prefer `Summary only`, and avoid running ASR and a large summary model at the same time.
+- **16 GB RAM:** the recommended baseline for most users. 0.6B or 1.7B ASR plus a 7B/8B Q4 local LLM works with `Balanced`.
+- **32 GB RAM:** comfortable for 1.7B ASR plus an 8B/14B local LLM and longer meetings.
+- **CPU-only:** works, but is slower. Prefer 0.6B ASR and a small 3B LLM; expect higher latency.
+- **Apple Silicon:** recommended. MLX accelerates Qwen3-ASR, and Metal can also accelerate Ollama.
+- **Windows/Linux + NVIDIA:** optional CUDA acceleration may improve local GGUF/Ollama performance.
+- Local ASR and local summaries share CPU, GPU and RAM. Under memory pressure, MeetingBro may defer work; use a smaller model or a cloud summary provider if needed.
+- These minimums do not guarantee a specific latency for every meeting. Actual performance depends on audio length, model quantization, OS and available GPU.
+
+Optional local summary configuration in `app/backend/.env`:
+
+```env
+MEETINGBRO_LLM_API_KEY=ollama
+MEETINGBRO_LLM_BASE_URL=http://127.0.0.1:11434/v1
+MEETINGBRO_LLM_MODEL=qwen2.5:3b
+```
+
+Then run `ollama pull qwen2.5:3b` (or `qwen2.5:7b`). In **Settings → Models**, choose Ollama, refresh the local model list, select the model, and use **Test connection**. See [docs/llm-providers.md](docs/llm-providers.md) for more local and cloud options. The optional Cantonese GGUF model is documented in [README.zh-tw.md](README.zh-tw.md#香港粵語-gguf-模型).
+
 ### Step 1 — Clone the repository
 
 ```bash

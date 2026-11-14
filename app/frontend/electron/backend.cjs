@@ -236,8 +236,9 @@ class BackendSupervisor {
           return;
         }
         if (health.ready) {
-          this._emit("ready");
-          return;
+          if (this.state !== "ready") this._emit("ready");
+          await sleep(3000);
+          continue;
         }
         // alive but model still loading/downloading
         this._emit("downloading-model", "Loading the local speech models…");

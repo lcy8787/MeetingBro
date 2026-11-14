@@ -233,8 +233,16 @@ function SettingsDialog({ onClose, sessionActive, recordingControls, diagnostics
             <section className="settings-section">
               <h3>{t("Speech model")}</h3>
               <label className="settings-field">
+                <span>{chinese ? "語音模型" : "Speech model"}</span>
+                <select value={settings.speechModel} onChange={e => update({speechModel: e.target.value as AppSettings["speechModel"]})}>
+                  <option value="qwen3">Qwen3-ASR</option>
+                  <option value="cantonese-hk-gguf">香港粵語 1.7B · GGUF Q4_K_M</option>
+                </select>
+              </label>
+              {settings.speechModel === "cantonese-hk-gguf" && <p className="settings-hint">自動辨識粵語／英語。先執行 scripts/install_qwen3_gguf.sh 或 Windows 的 .ps1 安裝腳本。</p>}
+              <label className="settings-field">
                 <span>Qwen3-ASR</span>
-                <select value={settings.qwenModelSize} onChange={e => update({ qwenModelSize: e.target.value as AppSettings["qwenModelSize"] })}>
+                <select disabled={settings.speechModel === "cantonese-hk-gguf"} value={settings.qwenModelSize} onChange={e => update({ qwenModelSize: e.target.value as AppSettings["qwenModelSize"] })}>
                   <option value="0.6B">0.6B · {chinese ? "輕量快速" : "Lightweight"}</option>
                   <option value="1.7B">1.7B · {chinese ? "高準確度" : "Higher accuracy"}</option>
                 </select>

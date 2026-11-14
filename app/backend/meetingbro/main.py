@@ -384,7 +384,7 @@ async def lifespan(app: FastAPI):
     )
     startup_profile_settings = _runtime_settings_from_profile(startup_runtime_profile)
     storage = Storage(Path(os.environ.get("MEETINGBRO_DB", str(DEFAULT_DB_PATH))))
-    asr_size = qwen_model_size()
+    asr_size = "1.7B" if os.environ.get("MEETINGBRO_ASR_MODEL") == "cantonese-hk-gguf" else qwen_model_size()
     asr, asr_engine, asr_device, asr_compute_type = build_formal_asr(hardware)
     _preview_asr_backend_name, _preview_asr_device = _configured_preview_runtime(
         hardware,
@@ -543,6 +543,12 @@ app.add_middleware(
 
 @app.get("/health")
 async def health() -> dict:
+    asr = getattr(app.state, "asr", None)
+    error = asr.runtime_error() if hasattr(asr, "runtime_error") else None
+    if error:
+        app.state.ready = False
+        app.state.ready_phase = "error"
+        app.state.ready_detail = error
     # ``ready`` becomes true once the formal ASR model is materialized. ``phase``
     # is one of: loading_model | ready | error. The desktop supervisor keys its
     # startup gate off these fields (process-alive + ready), never a fixed timeout.
@@ -552,6 +558,8 @@ async def health() -> dict:
         "ready": bool(getattr(app.state, "ready", False)),
         "phase": getattr(app.state, "ready_phase", "loading_model"),
         "detail": getattr(app.state, "ready_detail", None),
+        "asr_model": os.environ.get("MEETINGBRO_ASR_MODEL", "qwen3"),
+        "speech_language_mode": "auto" if getattr(app.state, "asr_engine", "") == "qwen3-gguf" else "selectable",
         "asr_engine": getattr(app.state, "asr_engine", "qwen3"),
         "asr_device": getattr(app.state, "formal_asr_device", "cpu"),
         "preview_backend": getattr(app.state, "preview_asr_backend_name", "shared"),
@@ -579,6 +587,8 @@ async def get_config() -> dict:
     hardware = getattr(app.state, "hardware_profile", None)
     llm_key = os.environ.get("MEETINGBRO_LLM_API_KEY") or os.environ.get("LONGCAT_API_KEY")
     return {
+        "asr_model": os.environ.get("MEETINGBRO_ASR_MODEL", "qwen3"),
+        "speech_language_mode": "auto" if getattr(app.state, "asr_engine", "") == "qwen3-gguf" else "selectable",
         "asr_engine": getattr(app.state, "asr_engine", "qwen3"),
         "metal_available": bool(getattr(hardware, "apple_metal_available", False)),
         "asr_size": getattr(app.state, "asr_size", "auto"),
@@ -983,6 +993,8 @@ async def session_ws(
 ) -> None:
     await ws.accept()
 
+    if getattr(app.state, "asr_engine", "") == "qwen3-gguf":
+        forced_language = None
     registry: SessionRegistry = app.state.sessions
     sync_watermark = 0
     if session_token is not None and not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", session_token):
@@ -1147,7 +1159,7 @@ async def session_ws(
                 # queues one final report after all transcript audio is flushed.
                 live_summaries_enabled=False,
                 final_summary_enabled=True,
-                forced_language=forced_language,
+                forced_language=None if getattr(app.state, "asr_engine", "") == "qwen3-gguf" else forced_language,
                 summary_language=summary_lang,
                 live_translation_language=None,
                 asr_accumulation_seconds=float(profile_settings["asr_accumulation_seconds"]),
@@ -1314,7 +1326,7 @@ async def session_ws(
                     else None
                 )
                 next_profile = normalize_runtime_profile(payload.get("runtime_profile") or manager._cfg.runtime_profile)
-                forced_language = payload.get("forced_language")
+                forced_language = None if getattr(app.state, "asr_engine", "") == "qwen3-gguf" else payload.get("forced_language")
                 if forced_language == "auto":
                     forced_language = None
                 elif forced_language not in (None, "zh", "en", "de"):
@@ -1419,7 +1431,7 @@ async def session_ws(
                     ),
                 )
                 manager.update_runtime_settings(
-                    forced_language=forced_language,
+                    forced_language=None if getattr(app.state, "asr_engine", "") == "qwen3-gguf" else forced_language,
                     summary_language=summary_lang,
                     live_translation_language=live_translation_language,
                     vocabulary_hint=next_vocabulary_hint,

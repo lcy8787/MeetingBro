@@ -32,6 +32,7 @@ export interface AppSettings {
   liveSummariesEnabled: boolean;
   finalSummaryEnabled: boolean;
   llmResourceMode: "realtime" | "balanced" | "post_recording";
+  speechModel: "qwen3" | "cantonese-hk-gguf";
   qwenModelSize: "0.6B" | "1.7B";
 
 }

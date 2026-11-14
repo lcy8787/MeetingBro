@@ -12,6 +12,9 @@ Module._load = function(name, ...rest) { return name === 'electron' ? {app:{}} :
 const store = require('./app/frontend/electron/settings-store.cjs');
 const initial = store.defaultSettings();
 assert.equal(initial.qwenModelSize, '0.6B');
+assert.equal(initial.speechModel, 'qwen3');
+assert.equal(store.settingsToEnv({...initial,speechModel:'cantonese-hk-gguf'}).MEETINGBRO_ASR_MODEL, 'cantonese-hk-gguf');
+assert.notEqual(store.startupSignature(initial), store.startupSignature({...initial,speechModel:'cantonese-hk-gguf'}));
 assert.equal(initial.liveSummariesEnabled, false);
 assert.equal(initial.finalSummaryEnabled, false);
 assert.equal(initial.whisperEngine, undefined);

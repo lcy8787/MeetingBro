@@ -26,6 +26,7 @@ function defaultSettings() {
     finalSummaryEnabled: false,
     llmResourceMode: "balanced", // realtime | balanced | post_recording
     qwenModelSize: "0.6B",
+    speechModel: "qwen3",
 
   };
 }
@@ -39,6 +40,7 @@ function withDefaults(raw) {
   return {
     ...d,
     ...current,
+    speechModel: current.speechModel === "cantonese-hk-gguf" ? "cantonese-hk-gguf" : "qwen3",
     qwenModelSize: ["0.6B", "1.7B"].includes(current.qwenModelSize) ? current.qwenModelSize : "0.6B",
     llm: { ...d.llm, ...(raw.llm || {}) },
   };
@@ -71,7 +73,7 @@ function writeSettings(partial) {
 // Settings that only take effect at backend startup (changing them requires a
 // backend restart). Changing anything else (audio source, languages, runtime
 // profile, vocabulary) is applied live over the WebSocket and never restarts.
-const STARTUP_KEYS = ["backendPort", "llm", "liveSummariesEnabled", "finalSummaryEnabled", "llmResourceMode", "qwenModelSize"];
+const STARTUP_KEYS = ["backendPort", "llm", "liveSummariesEnabled", "finalSummaryEnabled", "llmResourceMode", "qwenModelSize", "speechModel"];
 
 function startupSignature(settings) {
   const s = withDefaults(settings);
@@ -82,6 +84,7 @@ function startupSignature(settings) {
     finalSummaryEnabled: s.finalSummaryEnabled,
     llmResourceMode: s.llmResourceMode,
     qwenModelSize: s.qwenModelSize,
+    speechModel: s.speechModel,
   });
 }
 
@@ -100,6 +103,7 @@ function settingsToEnv(settings) {
   if (s.llm && s.llm.baseUrl) env.MEETINGBRO_LLM_BASE_URL = s.llm.baseUrl;
   if (s.llm && s.llm.model) env.MEETINGBRO_LLM_MODEL = s.llm.model;
 
+  env.MEETINGBRO_ASR_MODEL = s.speechModel;
   env.MEETINGBRO_QWEN3_MODEL_SIZE = s.qwenModelSize;
   return env;
 }

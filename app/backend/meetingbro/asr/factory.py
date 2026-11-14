@@ -15,6 +15,16 @@ def qwen_model_size() -> str:
 
 def build_formal_asr(hardware):
     size = qwen_model_size()
+    model = os.environ.get("MEETINGBRO_ASR_MODEL", "qwen3")
+    if model == "cantonese-hk-gguf":
+        from .qwen3_gguf_adapter import Qwen3GGUFAdapter
+        import json
+        metadata_path = ROOT / ".runtime" / "llama-gguf" / "installation.json"
+        cuda = metadata_path.is_file() and json.loads(metadata_path.read_text()).get("cuda", False)
+        device = "metal" if platform.system() == "Darwin" and platform.machine() == "arm64" else ("cuda" if cuda else "cpu")
+        return Qwen3GGUFAdapter(), "qwen3-gguf", device, "Q4_K_M"
+    if model != "qwen3":
+        raise ValueError("Unknown MEETINGBRO_ASR_MODEL")
     if platform.system() == "Darwin" and platform.machine() == "arm64":
         from .qwen3_mlx_adapter import Qwen3MLXAdapter
         path = os.environ.get("MEETINGBRO_QWEN3_MLX_MODEL", str(ROOT / "models" / f"Qwen3-ASR-{size}-4bit"))

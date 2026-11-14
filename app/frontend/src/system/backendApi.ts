@@ -19,6 +19,8 @@ export interface AudioDevices {
 }
 
 export interface BackendConfig {
+  asr_model: string;
+  speech_language_mode: "auto" | "selectable";
   asr_engine: string;
   metal_available: boolean;
   asr_size: string;

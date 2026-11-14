@@ -204,6 +204,43 @@ python scripts/list_audio_devices.py
 | **Node.js** | 建議 20 以上 | [nodejs.org](https://nodejs.org/) |
 | **Git** | 任意近期版本 | [git-scm.com](https://git-scm.com/) |
 
+### 本機模型建議與最低配置
+
+MeetingBro 可以完全在本機執行：以 **Qwen3-ASR** 做語音辨識，並以 **Ollama**（或其他相容 OpenAI API 的本機服務）產生摘要。下表是實用起點，不是硬性保證。長會議、較大的模型，以及同時執行 ASR 與摘要模型，都需要更多記憶體。
+
+| | 最低配置 | 建議配置 | 充裕配置 |
+|---|---|---|---|
+| **系統記憶體** | 8 GB | 16 GB | 32 GB |
+| **CPU** | 4 個現代核心 | 8 核心，或 Apple Silicon M1 以上 | Apple Silicon M2 Pro／M3／M4，或 8 核心以上 CPU |
+| **GPU** | 非必要 | Apple Silicon GPU／Metal | Apple Silicon GPU，或 8 GB 以上 VRAM 的 NVIDIA GPU |
+| **可用磁碟空間** | 10 GB | 20 GB | 30 GB 以上 |
+| **語音模型** | Qwen3-ASR 0.6B | Qwen3-ASR 0.6B 或 1.7B | Qwen3-ASR 1.7B |
+| **本機摘要模型** | 3B–4B 量化模型（例如 `qwen2.5:3b`） | 7B–8B Q4（例如 `qwen2.5:7b`、`llama3.1:8b`） | 8B–14B Q4 |
+| **執行模式** | `Summary only` 或 `Balanced` | `Balanced` | `Performance` |
+
+**模型大小參考：** Qwen3-ASR 0.6B 約 538 MB、Qwen3-ASR 1.7B 約 1.2 GB、香港粵語 GGUF 1.7B Q4_K_M 約 1.46 GB。本機 LLM 的下載大小各不相同；3B Q4 模型通常約 2 GB，7B／8B Q4 模型通常約 4–5 GB。
+
+**實用建議：**
+
+- **8 GB 記憶體：** 使用 Qwen3-ASR 0.6B 與 3B 本機 LLM；建議使用 `Summary only`，並避免同時執行 ASR 與大型摘要模型。
+- **16 GB 記憶體：** 多數使用者的建議起點。可使用 0.6B 或 1.7B ASR，加上 7B／8B Q4 本機 LLM，搭配 `Balanced`。
+- **32 GB 記憶體：** 可較從容地執行 1.7B ASR、8B／14B 本機 LLM 及較長的會議。
+- **僅使用 CPU：** 可以運作，但速度較慢。建議使用 0.6B ASR 與小型 3B LLM，並預期較高延遲。
+- **Apple Silicon：** 建議使用。MLX 可加速 Qwen3-ASR，Metal 亦可加速 Ollama。
+- **Windows／Linux + NVIDIA：** 可選用 CUDA 加速，改善本機 GGUF／Ollama 效能。
+- 本機 ASR 與本機摘要會共用 CPU、GPU 與記憶體。記憶體壓力較高時，MeetingBro 可能延後工作；如有需要，請改用較小模型或雲端摘要服務。
+- 這些最低配置不保證每個會議都能達到特定延遲；實際效能取決於音訊長度、模型量化、作業系統與可用 GPU。
+
+`app/backend/.env` 的本機摘要設定範例：
+
+```env
+MEETINGBRO_LLM_API_KEY=ollama
+MEETINGBRO_LLM_BASE_URL=http://127.0.0.1:11434/v1
+MEETINGBRO_LLM_MODEL=qwen2.5:3b
+```
+
+然後執行 `ollama pull qwen2.5:3b`（或 `qwen2.5:7b`）。在 **Settings → Models** 選擇 Ollama、重新整理本機模型列表、選擇模型，再按 **Test connection**。其他本機與雲端選項請參閱 [LLM 服務商指南](docs/llm-providers.md)。可選的香港粵語 GGUF 模型請參閱[香港粵語 GGUF 模型](#香港粵語-gguf-模型)。
+
 ### 步驟 1：複製專案
 
 ```bash
@@ -490,3 +527,9 @@ Qwen3-ASR 是唯一的語音辨識引擎。錄音結束後，已設定的摘要�
 ## 授權
 
 本專案採用 MIT 授權，詳見 [LICENSE](LICENSE)。
+
+### 香港粵語 GGUF 模型
+
+macOS／Linux 執行 `bash scripts/install_qwen3_gguf.sh`，Windows 執行 `powershell -File scripts/install_qwen3_gguf.ps1`。先安裝 Git、CMake 和平台 C++ 編譯工具。NVIDIA CUDA 版本加上 `--cuda` 並預先安裝 CUDA toolkit。腳本編譯鎖定版本的 llama-server，下載並校驗約 1.46 GB 模型，再進行載入與靜音音訊測試。下載失敗可重跑。
+
+完成後在 Settings → Models 選擇「香港粵語 1.7B · GGUF Q4_K_M」。程式自動管理本機服務，使用自動粵英辨識。終端啟動可設定 `MEETINGBRO_ASR_MODEL=cantonese-hk-gguf`。進階路徑設定為 `MEETINGBRO_LLAMA_SERVER_PATH` 及 `MEETINGBRO_QWEN3_GGUF_MODEL_DIR`。執行記錄位於 `.runtime/gguf-server.log`。模型提供窗口時間，實際字幕延遲及記憶體用量視硬件而定。

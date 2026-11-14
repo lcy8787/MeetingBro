@@ -11,7 +11,7 @@ import { InputLevelPreview } from "./components/AudioLevelMeter";
 import { RecorderView } from "./components/RecorderView";
 import type { NoticeFeedback } from "./components/RecorderNotice";
 import "./meetingWorkspace.css";
-import { fetchAudioDevices } from "./system/backendApi";
+import { fetchConfig, fetchAudioDevices } from "./system/backendApi";
 import type { AudioDevices } from "./system/backendApi";
 
 const VOCABULARY_STORAGE_KEY = "meetingbro.vocabulary";
@@ -204,6 +204,19 @@ export default function App() {
   const { language: uiLanguage, setLanguage: setUiLanguage } = useI18n();
   const [source, setSource] = useState("mixed");
   const [speechLanguage, setSpeechLanguage] = useState("auto");
+  const [autoSpeechOnly, setAutoSpeechOnly] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => fetchConfig().then(config => {
+      if (cancelled) return;
+      const auto = config.speech_language_mode === "auto";
+      setAutoSpeechOnly(auto);
+      if (auto) setSpeechLanguage("auto");
+    }).catch(() => {});
+    void refresh();
+    const timer = window.setInterval(refresh, 3000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, []);
   const [summaryLanguage, setSummaryLanguage] = useState("zh");
   const [subtitleLanguage, setSubtitleLanguage] = useState("off");
   const [runtimeProfile, setRuntimeProfile] = useState("balanced");
@@ -985,8 +998,8 @@ export default function App() {
             </label>
             <label className="settings-field">
               <span>{t("Transcription language")}</span>
-              <select value={speechLanguage} onChange={(e) => setSpeechLanguage(e.target.value)}>
-                <option value="auto">{t("Auto")}</option>
+              <select disabled={autoSpeechOnly} value={autoSpeechOnly ? "auto" : speechLanguage} onChange={(e) => setSpeechLanguage(e.target.value)}>
+                <option value="auto">{autoSpeechOnly ? "自動辨識粵語／英語" : t("Auto")}</option>
                 <option value="en">{t("English")}</option>
                 <option value="zh">{t("Chinese")}</option>
                 <option value="de">{t("Deutsch")}</option>
